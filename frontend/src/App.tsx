@@ -1,92 +1,184 @@
-import { useState } from "react";
-import { ConfigProvider, Layout, message, Alert } from "antd";
-import DatabaseConfigForm from "./components/DatabaseConfig";
+import { useState, useEffect, useCallback } from "react";
+import { ConfigProvider, Layout, Button, Modal, message, Tag } from "antd";
+import { PlusOutlined } from "@ant-design/icons";
+import ScriptList from "./components/ScriptList";
 import ScriptEditor from "./components/ScriptEditor";
+import DatabaseConfigForm from "./components/DatabaseConfig";
 import StatementPanel from "./components/StatementPanel";
 import LineageGraph from "./components/LineageGraph";
-import { submitAnalysis } from "./api/client";
-import type { DatabaseConfig as DatabaseConfigType, AnalysisResult } from "./types";
+import {
+  submitAnalysis, listScripts, getScript, deleteScript,
+  renameScript, getGlobalGraph,
+} from "./api/client";
+import type {
+  DatabaseConfig as DatabaseConfigType, AnalysisResult,
+  ScriptSummary, GlobalGraph,
+} from "./types";
 
 const { Header, Content } = Layout;
 
 function App() {
+  // === 状态 ===
+  const [scripts, setScripts] = useState<ScriptSummary[]>([]);
+  const [globalGraph, setGlobalGraph] = useState<GlobalGraph | null>(null);
+  const [selectedScriptId, setSelectedScriptId] = useState<string | null>(null);
+  const [selectedResult, setSelectedResult] = useState<AnalysisResult | null>(null);
+  const [highlightSeq, setHighlightSeq] = useState<number | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  // 新建分析的表单状态
   const [script, setScript] = useState("");
   const [dbConfig, setDbConfig] = useState<DatabaseConfigType>({
-    host: "localhost",
-    port: 5432,
-    database: "",
-    username: "",
-    password: "",
+    host: "localhost", port: 5432, database: "", username: "", password: "",
   });
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [highlightSeq, setHighlightSeq] = useState<number | null>(null);
 
+  // === 加载数据 ===
+  const refreshAll = useCallback(async () => {
+    const [s, g] = await Promise.all([listScripts(), getGlobalGraph()]);
+    setScripts(s);
+    setGlobalGraph(g);
+  }, []);
+
+  useEffect(() => { refreshAll(); }, [refreshAll]);
+
+  // === 选中脚本 ===
+  const handleSelectScript = useCallback(async (id: string | null) => {
+    setSelectedScriptId(id);
+    setHighlightSeq(null);
+    if (id) {
+      const result = await getScript(id);
+      setSelectedResult(result);
+    } else {
+      setSelectedResult(null);
+    }
+  }, []);
+
+  // === 新建分析 ===
   const handleAnalyze = async () => {
     setLoading(true);
-    setError(null);
     try {
-      const res = await submitAnalysis({ script, database_config: dbConfig });
-      setResult(res);
+      await submitAnalysis({ script, database_config: dbConfig });
       message.success("分析完成");
+      setScript("");
+      setModalOpen(false);
+      await refreshAll();
     } catch (e: any) {
-      setError(e.message || "分析失败");
       message.error(e.message || "分析失败");
     } finally {
       setLoading(false);
     }
   };
 
+  // === 删除脚本 ===
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteScript(id);
+      message.success("已删除");
+      if (selectedScriptId === id) {
+        setSelectedScriptId(null);
+        setSelectedResult(null);
+      }
+      await refreshAll();
+    } catch (e: any) {
+      message.error(e.message);
+    }
+  };
+
+  // === 重命名 ===
+  const handleRename = async (id: string, name: string) => {
+    try {
+      await renameScript(id, name);
+      await refreshAll();
+    } catch (e: any) {
+      message.error(e.message);
+    }
+  };
+
+  // === 状态栏统计 ===
+  const tableCount = globalGraph?.nodes.length ?? 0;
+  const edgeCount = globalGraph?.edges.length ?? 0;
+  const scriptCount = scripts.length;
+
   return (
     <ConfigProvider theme={{ token: { colorPrimary: "#1890ff" } }}>
       <Layout style={{ minHeight: "100vh" }}>
-        <Header style={{ background: "#001529", padding: "0 24px" }}>
-          <div style={{ color: "#fff", fontSize: 18, fontWeight: 600, lineHeight: "64px" }}>
+        <Header style={{ background: "#001529", padding: "0 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ color: "#fff", fontSize: 18, fontWeight: 600 }}>
             DataLineage Visualizer
           </div>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => setModalOpen(true)}
+          >
+            新建分析
+          </Button>
         </Header>
-        <Content style={{ padding: 16, background: "#f5f5f5" }}>
-          {/* 上半部分：配置 + 脚本输入 */}
-          <DatabaseConfigForm value={dbConfig} onChange={setDbConfig} />
-          <ScriptEditor
-            value={script}
-            onChange={setScript}
-            onAnalyze={handleAnalyze}
-            loading={loading}
-          />
 
-          {error && (
-            <Alert
-              message="分析错误"
-              description={error}
-              type="error"
-              closable
-              style={{ marginTop: 12 }}
-              onClose={() => setError(null)}
-            />
-          )}
-
-          {/* 下半部分：血缘图 + 语句面板 */}
-          {result && (
-            <div style={{ display: "flex", gap: 12, marginTop: 12 }}>
-              <div style={{ flex: 2 }}>
-                <LineageGraph
-                  visualization={result.visualization}
-                  highlightSeq={highlightSeq}
-                />
-              </div>
-              <div style={{ flex: 1, maxHeight: "calc(100vh - 420px)", overflow: "auto" }}>
-                <StatementPanel
-                  statementGroup={result.statement_group}
-                  highlightSeq={highlightSeq}
-                  onStatementClick={setHighlightSeq}
-                />
-              </div>
+        <Content style={{ padding: 12, background: "#f5f5f5", flex: 1 }}>
+          <div style={{ display: "flex", gap: 12, height: "calc(100vh - 100px)" }}>
+            {/* 左栏：脚本列表 */}
+            <div style={{ width: 240, flexShrink: 0 }}>
+              <ScriptList
+                scripts={scripts}
+                selectedId={selectedScriptId}
+                onSelect={handleSelectScript}
+                onDelete={handleDelete}
+                onRename={handleRename}
+              />
             </div>
-          )}
+
+            {/* 中栏：全局血缘图 */}
+            <div style={{ flex: 1 }}>
+              <LineageGraph
+                globalGraph={globalGraph}
+                visualization={selectedResult?.visualization ?? null}
+                highlightScriptId={selectedScriptId}
+                highlightSeq={highlightSeq}
+              />
+            </div>
+
+            {/* 右栏：语句分段 */}
+            <div style={{ width: 320, flexShrink: 0 }}>
+              <StatementPanel
+                statementGroup={selectedResult?.statement_group ?? null}
+                highlightSeq={highlightSeq}
+                onStatementClick={setHighlightSeq}
+              />
+            </div>
+          </div>
+
+          {/* 状态栏 */}
+          <div style={{
+            marginTop: 8, padding: "6px 12px", background: "#fff",
+            borderRadius: 4, fontSize: 12, color: "#666",
+            display: "flex", gap: 16,
+          }}>
+            <Tag color="green">{tableCount} 张表</Tag>
+            <Tag color="blue">{edgeCount} 条血缘</Tag>
+            <Tag color="orange">{scriptCount} 个脚本</Tag>
+          </div>
         </Content>
       </Layout>
+
+      {/* 新建分析弹窗 */}
+      <Modal
+        title="新建分析"
+        open={modalOpen}
+        onCancel={() => setModalOpen(false)}
+        footer={null}
+        width={800}
+        destroyOnHidden
+      >
+        <DatabaseConfigForm value={dbConfig} onChange={setDbConfig} />
+        <ScriptEditor
+          value={script}
+          onChange={setScript}
+          onAnalyze={handleAnalyze}
+          loading={loading}
+        />
+      </Modal>
     </ConfigProvider>
   );
 }

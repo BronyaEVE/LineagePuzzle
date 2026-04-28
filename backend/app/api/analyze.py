@@ -2,69 +2,78 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from ..models.analysis import AnalysisResult
+from ..models.analysis import AnalysisResult, ScriptSummary, GlobalGraph
 from ..schemas.requests import AnalyzeRequest, CorrectStatementRequest
 from ..services.analyzer import analyze
-from ..services.splitter import split_statements
-from ..services.preprocessor import preprocess
 from ..services.lineage_extractor import extract_lineages
+from ..services import store
 
 router = APIRouter()
-
-# 内存存储（MVP 阶段）
-_analyses: dict[str, AnalysisResult] = {}
 
 
 @router.post("/analyze", response_model=AnalysisResult)
 async def analyze_script(request: AnalyzeRequest):
-    """提交 DML 脚本进行血缘分析。"""
+    """提交 DML 脚本进行血缘分析，结果自动存入持久化存储。"""
     try:
         result = analyze(request.script, request.database_config)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
 
-    _analyses[result.analysis_id] = result
+    result = store.save_script(result)
     return result
 
 
-@router.get("/analyses")
-async def list_analyses(page: int = 1, page_size: int = 20):
-    """获取历史分析记录。"""
-    items = list(_analyses.values())
-    items.sort(key=lambda x: x.created_at, reverse=True)
-    start = (page - 1) * page_size
-    return {
-        "items": items[start : start + page_size],
-        "total": len(items),
-    }
+# === 脚本管理 ===
+
+@router.get("/scripts", response_model=list[ScriptSummary])
+async def list_scripts():
+    """获取所有脚本摘要列表。"""
+    return store.list_scripts()
 
 
-@router.get("/analyses/{analysis_id}", response_model=AnalysisResult)
-async def get_analysis(analysis_id: str):
-    """获取单次分析详情。"""
-    result = _analyses.get(analysis_id)
+@router.get("/scripts/{script_id}", response_model=AnalysisResult)
+async def get_script(script_id: str):
+    """获取单个脚本的完整分析结果。"""
+    result = store.get_script(script_id)
     if not result:
-        raise HTTPException(status_code=404, detail="分析记录不存在")
+        raise HTTPException(status_code=404, detail="脚本不存在")
     return result
 
 
-@router.get("/analyses/{analysis_id}/statements")
-async def get_statements(analysis_id: str):
-    """获取预处理和分段后的语句。"""
-    result = _analyses.get(analysis_id)
+@router.delete("/scripts/{script_id}")
+async def delete_script(script_id: str):
+    """删除脚本及其关联的全局边。"""
+    if not store.delete_script(script_id):
+        raise HTTPException(status_code=404, detail="脚本不存在")
+    return {"status": "deleted"}
+
+
+@router.put("/scripts/{script_id}/name")
+async def rename_script(script_id: str, name: str = ""):
+    """重命名脚本。"""
+    result = store.update_script_name(script_id, name)
     if not result:
-        raise HTTPException(status_code=404, detail="分析记录不存在")
+        raise HTTPException(status_code=404, detail="脚本不存在")
+    return {"status": "renamed", "name": name}
+
+
+@router.get("/scripts/{script_id}/statements")
+async def get_statements(script_id: str):
+    """获取脚本的语句分段。"""
+    result = store.get_script(script_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="脚本不存在")
     if not result.statement_group:
         raise HTTPException(status_code=404, detail="语句分段不存在")
     return result.statement_group
 
 
-@router.put("/analyses/{analysis_id}/statements/{seq}", response_model=AnalysisResult)
-async def correct_statement(analysis_id: str, seq: int, request: CorrectStatementRequest):
+@router.put("/scripts/{script_id}/statements/{seq}", response_model=AnalysisResult)
+async def correct_statement(script_id: str, seq: int, request: CorrectStatementRequest):
     """修正语句解析结果并重新生成血缘。"""
-    result = _analyses.get(analysis_id)
+    result = store.get_script(script_id)
     if not result:
-        raise HTTPException(status_code=404, detail="分析记录不存在")
+        raise HTTPException(status_code=404, detail="脚本不存在")
     if not result.statement_group:
         raise HTTPException(status_code=404, detail="语句分段不存在")
 
@@ -87,8 +96,24 @@ async def correct_statement(analysis_id: str, seq: int, request: CorrectStatemen
 
     # 重新构建可视化
     from ..services.analyzer import _build_visualization
-
     result.visualization = _build_visualization(lineages, table_type_map)
 
-    _analyses[analysis_id] = result
+    # 先删除旧边，再保存新结果
+    store._remove_edges_for_script(script_id)
+    store.save_script(result)
+
     return result
+
+
+# === 全局图谱 ===
+
+@router.get("/global-graph", response_model=GlobalGraph)
+async def get_global_graph():
+    """获取全局累积血缘图谱。"""
+    return store.get_global_graph()
+
+
+@router.get("/tables")
+async def get_tables():
+    """获取全局表注册表。"""
+    return store.get_tables()

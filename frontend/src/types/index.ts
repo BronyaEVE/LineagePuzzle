@@ -97,10 +97,39 @@ export interface Visualization {
 
 export interface AnalysisResult {
   analysis_id: string;
+  name: string;
   created_at: string;
+  updated_at: string | null;
   input_script: string;
   database_info: DatabaseInfo;
   statement_group: StatementGroup | null;
   lineages: Lineage[];
   visualization: Visualization;
+}
+
+// === 脚本管理 ===
+
+export interface ScriptSummary {
+  analysis_id: string;
+  name: string;
+  created_at: string;
+  statement_count: number;
+  table_count: number;
+}
+
+// === 全局图谱 ===
+
+export interface GlobalEdge {
+  edge_id: string;
+  source: string;
+  target: string;
+  operation: string;
+  script_id: string;
+  statement_seq: number;
+  created_at: string;
+}
+
+export interface GlobalGraph {
+  nodes: VisNode[];
+  edges: GlobalEdge[];
 }

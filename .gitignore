@@ -8,3 +8,4 @@ logs/
 .playwright-mcp/
 *.egg-info/
 .env
+backend/data/

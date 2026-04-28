@@ -1,6 +1,11 @@
-import type { AnalysisResult, AnalyzeRequest, CorrectStatementRequest } from "../types";
+import type {
+  AnalysisResult, AnalyzeRequest, CorrectStatementRequest,
+  ScriptSummary, GlobalGraph, StatementGroup,
+} from "../types";
 
 const API_BASE = "/api";
+
+// === 分析 ===
 
 export async function submitAnalysis(request: AnalyzeRequest): Promise<AnalysisResult> {
   const res = await fetch(`${API_BASE}/analyze`, {
@@ -15,34 +20,60 @@ export async function submitAnalysis(request: AnalyzeRequest): Promise<AnalysisR
   return res.json();
 }
 
-export async function getAnalysis(id: string): Promise<AnalysisResult> {
-  const res = await fetch(`${API_BASE}/analyses/${id}`);
-  if (!res.ok) throw new Error("获取分析结果失败");
+// === 脚本管理 ===
+
+export async function listScripts(): Promise<ScriptSummary[]> {
+  const res = await fetch(`${API_BASE}/scripts`);
+  if (!res.ok) throw new Error("获取脚本列表失败");
   return res.json();
 }
 
-export async function getAnalyses(page = 1, pageSize = 20): Promise<{ items: AnalysisResult[]; total: number }> {
-  const res = await fetch(`${API_BASE}/analyses?page=${page}&page_size=${pageSize}`);
-  if (!res.ok) throw new Error("获取历史记录失败");
+export async function getScript(id: string): Promise<AnalysisResult> {
+  const res = await fetch(`${API_BASE}/scripts/${id}`);
+  if (!res.ok) throw new Error("获取脚本详情失败");
   return res.json();
 }
 
-export async function getStatements(analysisId: string): Promise<StatementGroup> {
-  const res = await fetch(`${API_BASE}/analyses/${analysisId}/statements`);
+export async function deleteScript(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/scripts/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("删除失败");
+}
+
+export async function renameScript(id: string, name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/scripts/${id}/name?name=${encodeURIComponent(name)}`, {
+    method: "PUT",
+  });
+  if (!res.ok) throw new Error("重命名失败");
+}
+
+export async function getStatements(scriptId: string): Promise<StatementGroup> {
+  const res = await fetch(`${API_BASE}/scripts/${scriptId}/statements`);
   if (!res.ok) throw new Error("获取语句分段失败");
   return res.json();
 }
 
 export async function correctStatement(
-  analysisId: string,
-  seq: number,
-  request: CorrectStatementRequest
+  scriptId: string, seq: number, request: CorrectStatementRequest
 ): Promise<AnalysisResult> {
-  const res = await fetch(`${API_BASE}/analyses/${analysisId}/statements/${seq}`, {
+  const res = await fetch(`${API_BASE}/scripts/${scriptId}/statements/${seq}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
   });
   if (!res.ok) throw new Error("修正失败");
+  return res.json();
+}
+
+// === 全局图谱 ===
+
+export async function getGlobalGraph(): Promise<GlobalGraph> {
+  const res = await fetch(`${API_BASE}/global-graph`);
+  if (!res.ok) throw new Error("获取全局图谱失败");
+  return res.json();
+}
+
+export async function getTables(): Promise<Record<string, any>> {
+  const res = await fetch(`${API_BASE}/tables`);
+  if (!res.ok) throw new Error("获取表列表失败");
   return res.json();
 }
