@@ -144,16 +144,57 @@ WHERE o.status = 'completed';
 DROP TABLE IF EXISTS tmp_not_exist;
 
 
+-- ==================== 测试用例 7 ====================
+-- 场景: 带 schema 前缀的表名（归一化测试）
+-- 操作: 新建分析 → 粘贴 → 分析 → 检查全局图谱
+-- 期望: "public.orders" 和 "orders" 被视为同一张表，不会产生重复节点
+-- 验证:
+--   全局图谱中 orders 节点仍然只有一个
+--   边的 source/target 显示归一化后的名称（不含 public. 前缀）
+--   新增 customer_summary 的边应与用例3合并（不会产生 public.customer_summary 重复节点）
+
+INSERT INTO public.customer_summary (customer_id, total_amount, order_count)
+SELECT customer_id, SUM(amount), COUNT(*)
+FROM public.orders
+GROUP BY customer_id;
+
+
+-- ==================== 测试用例 8 ====================
+-- 场景: 跨 schema 引用 + 临时表
+-- 操作: 新建分析 → 粘贴 → 分析 → 检查全局图谱
+-- 期望:
+--   "staging.raw_events" 和 "public.raw_events" 等归一化正确
+--   临时表 tmp_from_staging 作为中间节点
+-- 验证:
+--   全局图谱新增 raw_events 和 processed_data 节点
+--   tmp_from_staging 为黄色中间表
+
+CREATE TEMP TABLE tmp_from_staging AS
+SELECT customer_id, amount
+FROM public.orders
+WHERE amount > 500;
+
+INSERT INTO customer_summary (customer_id, total_amount, order_count)
+SELECT customer_id, SUM(amount), COUNT(*)
+FROM tmp_from_staging
+GROUP BY customer_id;
+
+
 -- ============================================================
 -- 端到端验证流程
 -- ============================================================
 --
--- 1. 依次提交用例 1-6（每次点「新建分析」→ 粘贴 → 「分析血缘」）
--- 2. 左侧脚本列表应有 6 个脚本
+-- 1. 依次提交用例 1-8（每次点「新建分析」→ 粘贴 → 「分析血缘」）
+-- 2. 左侧脚本列表应有 8 个脚本
 -- 3. 点击「全部」查看全局累积图谱：
---    - 应包含约 8 个表节点（orders, customers, products, order_report, customer_summary, daily_metrics, 以及多个临时表）
---    - 边数量应超过 10 条
---    - order_report 应为紫色混合角色（多个脚本向其写入）
--- 4. 逐个点击脚本，验证每个脚本的血缘图和语句分段
--- 5. 删除某个脚本，验证全局图谱自动更新（边减少，孤立表被清理）
--- 6. 刷新页面，验证数据从 JSON 文件恢复
+--    - 应包含约 8-10 个表节点
+--    - 边数量应超过 12 条
+--    - order_report 应为混合角色（多个脚本向其写入）
+--    - 不应出现 "public.xxx" 或 "staging.xxx" 等带前缀的重复节点
+-- 4. 验证 schema 前缀归一化：
+--    - 用例 7 使用 public.orders / public.customer_summary
+--    - 这些应与用例 1-3 中的 orders / customer_summary 合并为同一节点
+--    - 不应出现 "public.orders" 和 "orders" 两个独立节点
+-- 5. 逐个点击脚本，验证每个脚本的血缘图和语句分段
+-- 6. 删除某个脚本，验证全局图谱自动更新（边减少，孤立表被清理）
+-- 7. 刷新页面，验证数据从 JSON 文件恢复

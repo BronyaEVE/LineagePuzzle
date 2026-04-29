@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from ..models.lineage import ColumnInfo, TableInfo, TableType
+from .normalize import normalize_table_name
 
 
 class DBConnector:
@@ -123,9 +124,9 @@ class DBConnector:
         alias = plan.get("Alias")
 
         if relation_name:
-            table = relation_name
+            table = normalize_table_name(relation_name)
         elif alias and node_type in ("Seq Scan", "Index Scan", "Index Only Scan", "Bitmap Heap Scan"):
-            table = alias
+            table = normalize_table_name(alias)
         else:
             table = None
 

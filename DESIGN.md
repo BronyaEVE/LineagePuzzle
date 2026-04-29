@@ -8,85 +8,132 @@
 
 ### 1.2 目标
 
-构建一个 **DML 脚本血缘关系分析与可视化工具**，能够：
+构建一个 **DML 脚本血缘关系分析与可视化工具**，采用 **增量拼图** 模式：
 
-- 接收用户提交的 DML 脚本
-- 自动解析脚本，提取表之间的数据流向关系
-- 以可视化图的形式呈现血缘关系
+- 每次分析一个 DML 脚本，自动提取其血缘关系
+- 多次分析结果累积到全局血缘图谱中，像拼图一样逐步构建完整的数据库血缘关系
+- 支持脚本管理（查看、重命名、删除），删除脚本后全局图谱自动更新
+- 支持按脚本筛选查看，或查看全部累积图谱
 
 ### 1.3 核心价值
 
+- **增量式构建**：每次分析一个脚本，逐步拼凑完整的血缘图谱，无需一次性提交所有脚本
 - **数据治理**：快速定位数据的来源和去向
 - **影响分析**：评估上游表变更对下游的影响范围
 - **代码审计**：直观展示复杂 ETL 脚本的数据流转逻辑
 - **临时表追踪**：识别脚本中的临时表（`CREATE TEMP/TABLE`），还原完整的中间数据流转链路
+- **持久化存储**：分析结果保存在 JSON 文件中，刷新页面或重启服务后数据不丢失
 
 ---
 
 ## 2. 系统架构
 
 ```
-┌─────────────┐      ┌──────────────────────┐      ┌─────────────┐
-│             │      │                      │      │             │
-│  前端页面    │─────▶│  DML 脚本分析器       │─────▶│  PVC 数据库  │
-│             │      │                      │      │             │
-│  - 脚本输入  │      │  - 脚本预处理         │      │  - 表结构    │
-│  - 结果展示  │◀─────│  - 语句拆分           │◀─────│  - 执行计划  │
-│  - 可视化    │      │  - 血缘提取           │      │             │
-│             │      │                      │      │             │
-└─────────────┘      └──────────────────────┘      └─────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                          前端页面（React）                            │
+│                                                                      │
+│  ┌──────────┐  ┌──────────────────────────┐  ┌──────────────────┐   │
+│  │ 脚本列表  │  │     全局血缘图谱          │  │  语句分段面板     │   │
+│  │ (左栏)    │  │     （累积拼图）          │  │  (右栏)          │   │
+│  └──────────┘  └──────────────────────────┘  └──────────────────┘   │
+│                                                                      │
+│  [新建分析] → 弹窗: 数据库配置 + 脚本输入 → 分析血缘                    │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │ REST API
+┌──────────────────────────────▼───────────────────────────────────────┐
+│                     后端分析器（FastAPI）                              │
+│                                                                      │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────────────┐   │
+│  │ 预处理器  │ │ 语句拆分  │ │ 血缘提取  │ │  Store 持久化存储层    │   │
+│  └──────────┘ └──────────┘ └──────────┘ └───────────────────────┘   │
+│                                                    │                 │
+│                                          ┌─────────▼──────────┐     │
+│                                          │  data/              │     │
+│                                          │  ├── tables.json    │     │
+│                                          │  ├── edges.json     │     │
+│                                          │  └── scripts/*.json │     │
+│                                          └────────────────────┘     │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼───────────────────────────────────────┐
+│                      PostgreSQL 数据库                                │
+│                                                                      │
+│  - 表结构（INFORMATION_SCHEMA）                                       │
+│  - 执行计划（EXPLAIN，不修改数据）                                      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-系统采用 **前后端分离** 架构，包含三个核心层：
+系统采用 **前后端分离** 架构，包含四个核心层：
 
 | 层级 | 职责 |
 |------|------|
-| **前端页面层** | 用户交互：脚本输入、参数配置、可视化结果展示 |
+| **前端页面层** | 三栏布局：脚本列表、全局血缘图谱、语句分段面板。新建分析通过弹窗完成 |
 | **分析器层（后端）** | 核心逻辑：脚本预处理、语句解析、血缘提取 |
-| **数据库层（PVC）** | 数据支撑：提供表结构信息、执行 DML 脚本、返回执行计划 |
+| **持久化存储层（Store）** | JSON 文件存储：全局表注册表、全局血缘边、各脚本分析结果 |
+| **数据库层（PostgreSQL）** | 数据支撑：提供表结构信息、执行计划 |
 
 ---
 
 ## 3. 核心流程
 
-整个分析流程分为 5 个步骤：
+### 3.1 整体分析流程
 
 ```
-步骤1: 分析器处理 DML 脚本
-         │
-         ▼
-步骤2: 分析器将 DML 脚本拆分为一系列可执行语句
-         │
-         ▼
-步骤3: 遍历数据库进行分析，读取边缘信息
-         │  ① 读取表结构
-         │  ② 执行 DML 脚本
-         │  ③ 读取执行计划
-         ▼
-步骤4: 保存表之间的血缘关系
-         │
-         ▼
-步骤5: 根据血缘关系输出可视化图
+用户提交脚本
+     │
+     ▼
+步骤1: 预处理 → 去注释、压缩空格
+     │
+     ▼
+步骤2: 语句拆分 → 保留 CREATE/INSERT/UPDATE/DELETE/MERGE
+     │
+     ▼
+步骤3: 数据库分析 → 表结构 + 执行计划（EXPLAIN）
+     │
+     ▼
+步骤4: 血缘提取 → 源表 → 中间表 → 目标表
+     │
+     ▼
+步骤5: 持久化存储 → 保存到 JSON + 更新全局图谱
+     │
+     ▼
+步骤6: 前端展示 → 刷新脚本列表和全局图谱
 ```
 
-### 3.1 步骤详解
+### 3.2 增量拼图机制
 
-**步骤1 — 分析器处理 DML 脚本**
+每次分析一个脚本后：
 
-前端页面接收用户提交的 DML 脚本文本，传递给后端分析器。
+1. **脚本保存**：分析结果保存为 `data/scripts/{script_id}.json`
+2. **全局表更新**：脚本涉及的表合并到 `data/tables.json`（全局表注册表）
+3. **全局边累积**：血缘边添加到 `data/edges.json`（标注来源脚本）
+4. **前端刷新**：脚本列表和全局图谱同时更新
 
-**步骤2 — 脚本拆分为可执行语句**
+删除一个脚本后：
 
-分析器对 DML 脚本进行预处理，将完整的脚本拆分为多条独立的可执行 SQL 语句。
+1. **移除脚本文件**：删除 `data/scripts/{script_id}.json`
+2. **移除关联边**：从 `data/edges.json` 中移除该脚本的所有边
+3. **清理孤立表**：从 `data/tables.json` 中移除不再被任何边引用的表
+4. **前端刷新**：全局图谱自动更新
 
-预处理操作包括：
+### 3.3 步骤详解
+
+**步骤1 — 预处理**
+
+分析器对 DML 脚本进行预处理：
+
 - 去除注释（`--` 单行注释、`/* */` 多行注释）
-- 去除多余空格和空白行
+- 压缩连续空格和空白行
 - 按语句分隔符（`;`）拆分为独立语句
-- **保留 CREATE 语句**：不过滤 `CREATE TABLE` / `CREATE TEMP TABLE`，因为这些语句定义的临时表/中间表会出现在后续 DML 中，影响血缘链路
-- 为每条语句标注序号（`#1`, `#2`, `#3`...），并单独存储，以一个完整的 DML 脚本为一组
+- **保留 CREATE 语句**：不过滤 `CREATE TABLE` / `CREATE TEMP TABLE`
+- 过滤与数据流转无关的 DDL（`ALTER`、`DROP`）
+- 为每条语句标注序号（`#1`, `#2`, `#3`...），以一个完整的 DML 脚本为一组
 
-**步骤3 — 遍历数据库进行分析**
+**步骤2 — 语句拆分**
+
+对预处理后的脚本按 `;` 分割，保留 `CREATE`/`INSERT`/`UPDATE`/`DELETE`/`MERGE` 语句。
+
+**步骤3 — 数据库分析**
 
 对每条拆分后的语句，从数据库获取两类信息：
 
@@ -94,48 +141,195 @@
 
 | 操作 | 说明 |
 |------|------|
-| 读取表结构 | 查询 `INFORMATION_SCHEMA`，获取已存在表的元信息（表名、列名、列类型、约束等） |
-| 记录临时表 | 对于脚本中 `CREATE TABLE` 定义的新表/临时表，记录其结构信息，供后续语句引用 |
+| 读取表结构 | 查询 `INFORMATION_SCHEMA`，获取已存在表的元信息 |
+| 记录临时表 | 对于脚本中 `CREATE TABLE` 定义的新表/临时表，记录其结构信息 |
 
 **第二类：DML 执行计划**
 
 | 操作 | 说明 |
 |------|------|
 | 获取执行计划 | 对 DML 语句使用 `EXPLAIN` 获取执行计划（不实际修改数据） |
-| 提取血缘 | 从执行计划中提取表引用关系——执行计划反映的是数据库实际解析结果，比纯静态语法分析更准确 |
+| 提取血缘 | 从执行计划中提取表引用关系 |
 
-> **优先级**：基于执行计划的血缘提取 > 基于静态语法解析的补充。执行计划由数据库引擎生成，能正确处理视图展开、别名解析、子查询等复杂情况。
+> **优先级**：基于执行计划的血缘提取 > 基于静态语法解析的补充。
 
-**步骤4 — 保存血缘关系**
+**步骤4 — 血缘提取**
 
-从执行计划和表结构中提取的表间关系，以结构化形式保存，包括：
-- 源表 → 中间表 → 目标表的完整映射（中间表/临时表作为独立节点保存）
-- 列级别的映射关系（如可提取）
-- 关系类型（INSERT、UPDATE、DELETE、CREATE 等）
+提取策略（按优先级排列）：
 
-**步骤5 — 输出可视化结果**
+| 优先级 | 策略 | 说明 |
+|--------|------|------|
+| **高** | 基于执行计划 | 解析 `EXPLAIN` 输出中的表引用节点，准确度最高 |
+| **低** | 基于静态语法解析 | 通过 SQL AST 解析器识别表关系，作为补充 |
 
-将血缘关系数据和分段语句信息传递给前端：
-- **可视化图**：以有向图形式渲染血缘关系，包含源表、中间表、目标表三种节点类型
-- **分段语句面板**：展示完成拆分的每条语句（带序号标注），支持人工检查和修正
+中间表/临时表处理：当脚本中出现 `CREATE TABLE` 定义的临时表时，血缘链路为：
+
+```
+源表 ──CREATE──▶ 临时表/中间表 ──INSERT──▶ 目标表
+```
+
+中间表作为独立节点保留在血缘关系中，不会被折叠或省略。
+
+**步骤5 — 持久化存储**
+
+分析结果存入三层 JSON 文件：
+
+| 文件 | 内容 | 说明 |
+|------|------|------|
+| `scripts/{id}.json` | 完整的 AnalysisResult | 包含语句、血缘、可视化等全部信息 |
+| `tables.json` | 全局表注册表 | 所有唯一表的元信息，支持表类型演化 |
+| `edges.json` | 全局血缘边 | 所有脚本的血缘边，每条边标注 script_id |
+
+**步骤6 — 前端展示**
+
+前端三栏布局同时更新：
+
+- **左栏脚本列表**：新增一条脚本记录
+- **中栏全局图谱**：新增的节点和边自动出现在全局图中
+- **状态栏**：表数量、血缘数量、脚本数量实时更新
 
 ---
 
-## 4. 模块设计
+## 4. 存储设计（JSON 文件）
 
-### 4.1 前端页面模块
+### 4.1 目录结构
 
-**职责**：提供用户交互界面
+```
+backend/data/
+├── tables.json              # 全局表注册表（所有唯一表）
+├── edges.json               # 全局血缘边（累积所有脚本的血缘关系）
+└── scripts/
+    ├── {script_id}.json     # 单个脚本分析结果
+    └── ...
+```
+
+### 4.2 全局表注册表 `tables.json`
+
+```json
+{
+  "orders": {
+    "schema": "public",
+    "name": "orders",
+    "type": "source",
+    "columns": [{"name": "id", "type": "INTEGER"}, ...],
+    "source": "database",
+    "first_seen": "2026-04-28T10:00:00",
+    "script_count": 3,
+    "last_seen": "2026-04-28T12:00:00"
+  },
+  "tmp_order_detail": {
+    "schema": "public",
+    "name": "tmp_order_detail",
+    "type": "intermediate",
+    "columns": [],
+    "source": "script_created",
+    "first_seen": "2026-04-28T10:00:00",
+    "script_count": 1,
+    "last_seen": "2026-04-28T10:00:00"
+  }
+}
+```
+
+> 表类型随使用演化：如果一个表先作为 target 出现，后来又被其他脚本引用为 source，类型更新为更综合的角色。
+
+### 4.3 单个脚本 `scripts/{script_id}.json`
+
+```json
+{
+  "analysis_id": "uuid",
+  "name": "ETL_订单汇总",
+  "created_at": "2026-04-28T10:00:00",
+  "updated_at": "2026-04-28T10:00:00",
+  "input_script": "原始脚本",
+  "database_info": { ... },
+  "statement_group": {
+    "group_id": "uuid",
+    "original_script": "...",
+    "preprocessed_script": "...",
+    "statements": [
+      { "seq": 1, "type": "CREATE", "text": "...", "tables_referenced": [...], ... },
+      { "seq": 2, "type": "INSERT", "text": "...", ... }
+    ]
+  },
+  "lineages": [ ... ],
+  "visualization": { ... }
+}
+```
+
+### 4.4 全局血缘边 `edges.json`
+
+```json
+[
+  {
+    "edge_id": "uuid",
+    "source": "orders",
+    "target": "tmp_order_detail",
+    "operation": "CREATE",
+    "script_id": "abc-123",
+    "statement_seq": 1,
+    "created_at": "2026-04-28T10:00:00"
+  },
+  {
+    "edge_id": "uuid",
+    "source": "customers",
+    "target": "tmp_order_detail",
+    "operation": "CREATE",
+    "script_id": "abc-123",
+    "statement_seq": 1,
+    "created_at": "2026-04-28T10:00:00"
+  }
+]
+```
+
+> 每条边都关联到具体的 script_id，点击边可定位到对应脚本和语句。
+
+---
+
+## 5. 模块设计
+
+### 5.1 前端页面模块
+
+**页面布局（三栏 + 弹窗）：**
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  DataLineage Visualizer                          [新建分析]       │
+├──────────┬───────────────────────────────────┬───────────────────┤
+│          │                                   │                   │
+│  脚本列表 │     全局血缘图谱                   │  语句分段面板      │
+│  (左栏)   │     （累积拼图）                   │  (右栏)           │
+│          │                                   │                   │
+│  ▸ ETL_  │  [orders]──▶[tmp]──▶[report]     │  选中脚本的        │
+│    订单汇总│  [customers]──▶[report]          │  语句列表          │
+│  ▸ 每日   │                                   │                   │
+│    汇总   │  [全部] 选中脚本高亮               │  #1 CREATE ...    │
+│          │                                   │  #2 INSERT ...    │
+│  [+新建]  │                                   │                   │
+├──────────┴───────────────────────────────────┴───────────────────┤
+│  状态栏: 12 张表 | 18 条血缘 | 5 个脚本                           │
+└──────────────────────────────────────────────────────────────────┘
+```
 
 | 子模块 | 功能 |
 |--------|------|
-| 脚本编辑器 | 提供代码编辑区域，支持 SQL 语法高亮，用户在此输入或粘贴 DML 脚本 |
-| 数据库配置 | 配置 PVC 数据库连接信息（主机、端口、用户名、密码、数据库名） |
-| 分析触发 | 提交按钮，将脚本和配置发送给后端分析器 |
-| 可视化画布 | 展示血缘关系有向图（含源表、中间表、目标表三种节点），支持缩放、拖拽、点击节点查看详情 |
-| 语句分段面板 | 展示预处理后的语句分段列表，支持人工检查、血缘关联高亮、修正后重新生成 |
+| 脚本列表（左栏） | 展示所有已分析脚本的列表，支持选中、重命名、删除。点击「全部」查看全局图谱 |
+| 全局血缘图谱（中栏） | 累积所有脚本的血缘关系。选中脚本时高亮该脚本的边，支持垂直/水平布局切换 |
+| 语句分段面板（右栏） | 展示选中脚本的语句分段，支持点击语句高亮对应的血缘边 |
+| 新建分析弹窗 | 数据库配置 + 脚本输入，分析完成后自动添加到列表并刷新全局图 |
+| 状态栏 | 实时显示表数量、血缘数量、脚本数量 |
 
-### 4.2 DML 脚本分析器模块
+**交互逻辑：**
+
+| 操作 | 效果 |
+|------|------|
+| 点击左侧脚本 | 中栏切换为该脚本的血缘图（边高亮），右栏显示该脚本的语句分段 |
+| 点击「全部」按钮 | 中栏恢复为全局累积图谱 |
+| 点击语句分段中的语句 | 中栏中对应的血缘边高亮为蓝色粗线 |
+| 点击「新建分析」 | 弹出 Modal，填写数据库配置和脚本后分析 |
+| 删除脚本 | 全局图谱自动更新（移除边，清理孤立表） |
+| 重命名脚本 | 左侧脚本名称更新 |
+
+### 5.2 DML 脚本分析器模块
 
 **职责**：核心解析引擎
 
@@ -159,248 +353,124 @@
          │
          ▼
 输出: StatementGroup
-      - group_id: 脚本唯一标识
-      - original_script: 原始脚本原文
-      - preprocessed_script: 预处理后的脚本
-      - statements: [
-          { seq: 1, type: "CREATE", text: "CREATE TEMP TABLE tmp ..." },
-          { seq: 2, type: "INSERT", text: "INSERT INTO tmp SELECT ..." },
-          { seq: 3, type: "INSERT", text: "INSERT INTO target SELECT ..." }
-        ]
 ```
 
-> **分段存储的意义**：保留预处理和拆分结果，方便后续血缘分析时逐条关联语句，也方便前端展示给用户进行人工检查和修正。
+### 5.3 持久化存储模块（Store）
 
-### 4.3 PVC 预处理模块
+**职责**：JSON 文件的读写和全局数据管理
 
-**职责**：对输入脚本进行清洗
+```
+方法:
+  # 脚本管理
+  save_script(result: AnalysisResult)          # 保存单个脚本 + 更新全局表/边
+  list_scripts() -> list[ScriptSummary]        # 列表（id, name, created_at, table_count）
+  get_script(script_id) -> AnalysisResult      # 读取单个
+  delete_script(script_id)                     # 删除脚本 + 清理关联的全局边和孤立表
+  update_script_name(script_id, name)          # 重命名
 
-| 操作 | 说明 |
-|------|------|
-| 去注释 | 移除 `--` 和 `/* */` 注释 |
-| 去空格 | 压缩连续空格，移除首尾空白 |
-| 去多余分析 | 过滤空语句，但 **保留 `CREATE TABLE` / `CREATE TEMP TABLE`**（这些语句定义的中间表会影响后续 DML 的血缘关系），仅移除与数据流转无关的 DDL（如 `ALTER`、`DROP` 纯结构变更） |
+  # 全局图谱
+  get_global_graph() -> GlobalGraph            # 返回所有节点 + 所有边（带 script_id 标注）
+  get_tables() -> dict[str, TableRecord]       # 全局表注册表
 
-> **为什么保留 CREATE**：许多 DML 脚本会先创建临时表或中间表，再通过 INSERT 将数据写入。如果过滤掉 CREATE，后续 DML 中引用的临时表就无法识别，导致血缘链路断裂。
+  # 内部方法
+  _merge_tables(result)                        # 合并新表到全局注册表
+  _merge_edges(result)                         # 添加新边到全局边
+  _remove_edges_for_script(script_id)          # 删除脚本关联的边
+  _cleanup_orphan_tables()                     # 清理不再被任何边引用的表
+```
 
-### 4.4 数据库连接模块
+### 5.4 数据库连接模块
 
-**职责**：与 PVC 数据库交互，提供两类独立的数据支撑
+**职责**：与 PostgreSQL 数据库交互
 
-本模块明确分为两个子模块，各自独立工作：
+分为两个子模块：
 
 **子模块 A — 表结构信息获取**
 
 | 操作 | 说明 |
 |------|------|
-| 读取已有表结构 | 查询 `INFORMATION_SCHEMA` 获取已存在表的元数据（表名、列名、列类型、约束） |
-| 记录脚本中的新表 | 识别脚本中 `CREATE TABLE` / `CREATE TEMP TABLE` 定义的中间表，记录其结构信息 |
-| 构建表元信息索引 | 将所有表（已有 + 脚本新建）的结构信息缓存为索引，供血缘分析时查找列映射关系 |
+| 读取已有表结构 | 查询 `INFORMATION_SCHEMA` 获取已存在表的元数据 |
+| 记录脚本中的新表 | 识别脚本中 `CREATE TABLE` 定义的中间表 |
+| 构建表元信息索引 | 将所有表的结构信息缓存为索引 |
 
 **子模块 B — 执行计划获取**
 
 | 操作 | 说明 |
 |------|------|
-| EXPLAIN DML 语句 | 对每条 DML 语句执行 `EXPLAIN`，获取数据库引擎生成的执行计划 |
-| 解析执行计划 | 从执行计划输出中提取表扫描节点（Seq Scan、Index Scan）和表操作节点 |
+| EXPLAIN DML 语句 | 对每条 DML 语句执行 `EXPLAIN`，获取执行计划 |
+| 解析执行计划 | 从执行计划输出中提取表扫描和表操作节点 |
 | 提取表引用关系 | 从执行计划中还原源表 → 目标表的映射关系 |
 
-> **执行计划优于静态解析**：执行计划由数据库引擎实际解析生成，能正确处理视图展开、别名解析、子查询展开、CTE 内联等复杂情况。静态语法解析作为补充，仅在执行计划不可用时使用。
-
-### 4.5 血缘关系提取模块
+### 5.5 血缘关系提取模块
 
 **职责**：从执行计划和 AST 中提取表间血缘关系
 
-提取策略（按优先级排列）：
-
-| 优先级 | 策略 | 说明 |
-|--------|------|------|
-| **高** | 基于执行计划 | 解析 `EXPLAIN` 输出中的表引用节点，准确度最高 |
-| **低** | 基于静态语法解析 | 通过 SQL AST 解析器识别 `INSERT INTO target SELECT ... FROM source` 中的源表和目标表，作为执行计划不可用时的补充 |
-
 **中间表/临时表处理**：
-
-当脚本中出现 `CREATE TABLE` 定义的临时表时，血缘链路为：
 
 ```
 源表 ──INSERT──▶ 临时表/中间表 ──INSERT──▶ 目标表
 ```
 
-中间表作为独立节点保留在血缘关系中，不会被折叠或省略。这样可以完整还原数据的多步流转过程。
+中间表作为独立节点保留在血缘关系中，不会被折叠或省略。
 
 **语句与血缘的关联**：
 
-每条血缘关系都会关联到具体的语句序号，便于前端展示时定位到对应的 DML 语句。
+每条血缘关系都关联到具体的语句序号，便于前端展示时定位到对应的 DML 语句。
 
-### 4.6 可视化模块
+### 5.6 可视化模块
 
 **职责**：将血缘关系渲染为可交互的有向图
 
 图元素定义：
+
 - **节点类型**：
   - **源表节点**（Source）：数据来源的物理表，绿色
-  - **中间表节点**（Intermediate）：脚本中 CREATE 定义的临时表/中间表，黄色
+  - **中间表节点**（Intermediate）：脚本中 CREATE 定义的临时表，黄色
   - **目标表节点**（Target）：数据最终写入的表，蓝色
-- **边**：表间的数据流向（有向箭头），标注操作类型（INSERT、UPDATE 等）
-- **布局**：采用分层布局（DAG），源表在上游，中间表在中间层，目标表在下游
+- **边**：表间的数据流向（有向箭头），标注操作类型
+- **布局**：自定义拓扑排序 BFS 布局，支持垂直（TB）和水平（LR）切换
 
-### 4.7 语句分段展示模块
+**全局图谱节点颜色规则**：
 
-**职责**：在前端展示预处理后的语句分段，支持人工检查和修正
-
-| 功能 | 说明 |
-|------|------|
-| 语句列表展示 | 将预处理后的语句按序号展示，每条语句显示类型标签（CREATE/INSERT/UPDATE 等）和完整文本 |
-| 语法高亮 | 对 SQL 关键字进行语法高亮，提升可读性 |
-| 血缘关联高亮 | 点击某条语句时，在血缘图中高亮该语句产生的血缘边 |
-| 人工修正 | 支持编辑语句的解析结果（如修正识别错误的表名），修正后重新生成血缘图 |
-| 原文对比 | 展示原始脚本与预处理后脚本的对比，方便用户确认预处理是否正确 |
-
-**前端页面布局建议**：
-
-```
-┌─────────────────────────────────────────────────────┐
-│  数据库配置  │  脚本输入区                              │
-├──────────────────────┬──────────────────────────────┤
-│                      │                              │
-│   血缘关系可视化图    │   语句分段面板                │
-│   （可缩放/拖拽）     │   #1 CREATE TEMP TABLE ...   │
-│                      │   #2 INSERT INTO tmp ...     │
-│                      │   #3 INSERT INTO target ...  │
-│                      │                              │
-└──────────────────────┴──────────────────────────────┘
-```
+| 节点类型 | 颜色 | 判定 |
+|----------|------|------|
+| 纯源表 | 绿色 | 只在边的 source 端出现 |
+| 纯目标表 | 蓝色 | 只在边的 target 端出现 |
+| 中间表 | 黄色 | 既作为 source 又作为 target |
 
 ---
 
-## 5. 数据模型
+## 6. 数据模型
 
-### 5.1 表信息（TableInfo）
-
-```json
-{
-  "schema": "public",
-  "table": "tmp_orders",
-  "table_type": "intermediate",
-  "source": "script_created",
-  "columns": [
-    { "name": "order_id", "type": "INTEGER" },
-    { "name": "total_amount", "type": "DECIMAL" }
-  ]
-}
-```
-
-> `table_type` 取值：`source`（已有的物理源表）、`intermediate`（脚本中 CREATE 的中间表/临时表）、`target`（最终目标表）
-> `source` 取值：`database`（从数据库 INFORMATION_SCHEMA 读取）、`script_created`（从脚本 CREATE 语句解析）
-
-### 5.2 语句分段（StatementGroup）
-
-```json
-{
-  "group_id": "uuid",
-  "original_script": "原始 DML 脚本全文",
-  "preprocessed_script": "预处理后的脚本（去注释、去空格后）",
-  "statements": [
-    {
-      "seq": 1,
-      "type": "CREATE",
-      "text": "CREATE TEMP TABLE tmp_orders AS SELECT order_id, SUM(amount) AS total_amount FROM orders GROUP BY order_id",
-      "tables_referenced": ["orders"],
-      "tables_created": ["tmp_orders"]
-    },
-    {
-      "seq": 2,
-      "type": "INSERT",
-      "text": "INSERT INTO order_summary (id, total_amount) SELECT order_id, total_amount FROM tmp_orders",
-      "tables_referenced": ["tmp_orders"],
-      "tables_modified": ["order_summary"]
-    }
-  ]
-}
-```
-
-### 5.3 血缘关系（Lineage）
-
-```json
-{
-  "lineage_id": "uuid",
-  "source_table": {
-    "schema": "public",
-    "table": "orders"
-  },
-  "target_table": {
-    "schema": "public",
-    "table": "tmp_orders"
-  },
-  "operation_type": "CREATE",
-  "extraction_method": "execution_plan",
-  "statement_seq": 1,
-  "column_mappings": [
-    {
-      "source_column": "order_id",
-      "target_column": "order_id"
-    },
-    {
-      "source_column": "amount",
-      "target_column": "total_amount",
-      "transformation": "SUM"
-    }
-  ],
-  "dml_statement": "CREATE TEMP TABLE tmp_orders AS SELECT order_id, SUM(amount) AS total_amount FROM orders GROUP BY order_id"
-}
-```
-
-> `extraction_method` 取值：`execution_plan`（从执行计划提取，优先级高）、`static_analysis`（静态语法解析补充）
-> `statement_seq`：关联到 StatementGroup 中的语句序号，方便前端定位
-
-### 5.4 分析结果（AnalysisResult）
+### 6.1 分析结果（AnalysisResult）
 
 ```json
 {
   "analysis_id": "uuid",
-  "created_at": "2026-04-27T12:00:00Z",
+  "name": "ETL_订单汇总",
+  "created_at": "2026-04-28T10:00:00",
+  "updated_at": "2026-04-28T10:00:00",
   "input_script": "原始 DML 脚本",
   "database_info": {
     "tables_from_db": [
-      {
-        "schema": "public",
-        "table": "orders",
-        "columns": ["order_id", "amount", "customer_id"]
-      }
+      { "schema": "public", "table": "orders", "table_type": "source", "source": "database" }
     ],
     "tables_from_script": [
-      {
-        "schema": "public",
-        "table": "tmp_orders",
-        "columns": ["order_id", "total_amount"],
-        "table_type": "intermediate"
-      }
+      { "schema": "public", "table": "tmp_orders", "table_type": "intermediate", "source": "script_created" }
     ]
   },
   "statement_group": {
     "group_id": "uuid",
-    "original_script": "原始 DML 脚本",
+    "original_script": "原始脚本",
     "preprocessed_script": "预处理后脚本",
     "statements": [
-      { "seq": 1, "type": "CREATE", "text": "CREATE TEMP TABLE tmp_orders ..." },
-      { "seq": 2, "type": "INSERT", "text": "INSERT INTO order_summary ..." }
+      { "seq": 1, "type": "CREATE", "text": "CREATE TEMP TABLE tmp_orders ...", "tables_referenced": ["orders"], "tables_created": ["tmp_orders"] },
+      { "seq": 2, "type": "INSERT", "text": "INSERT INTO order_summary ...", "tables_referenced": ["tmp_orders"], "tables_modified": ["order_summary"] }
     ]
   },
   "lineages": [
-    {
-      "source": "orders",
-      "target": "tmp_orders",
-      "operation": "CREATE",
-      "method": "execution_plan",
-      "statement_seq": 1
-    },
-    {
-      "source": "tmp_orders",
-      "target": "order_summary",
-      "operation": "INSERT",
-      "method": "execution_plan",
-      "statement_seq": 2
-    }
+    { "lineage_id": "uuid", "source_table": "orders", "target_table": "tmp_orders", "operation_type": "CREATE", "extraction_method": "execution_plan", "statement_seq": 1 },
+    { "lineage_id": "uuid", "source_table": "tmp_orders", "target_table": "order_summary", "operation_type": "INSERT", "extraction_method": "execution_plan", "statement_seq": 2 }
   ],
   "visualization": {
     "nodes": [
@@ -416,19 +486,48 @@
 }
 ```
 
----
+### 6.2 脚本摘要（ScriptSummary）
 
-## 6. 技术选型建议
+```json
+{
+  "analysis_id": "uuid",
+  "name": "ETL_订单汇总",
+  "statement_count": 2,
+  "table_count": 3,
+  "created_at": "2026-04-28T10:00:00",
+  "updated_at": "2026-04-28T10:00:00"
+}
+```
 
-| 组件 | 推荐技术 | 备选 |
-|------|----------|------|
-| **前端框架** | React + TypeScript | Vue 3 |
-| **可视化库** | React Flow（基于 D3） | AntV G6, Cytoscape.js |
-| **代码编辑器** | Monaco Editor | CodeMirror |
-| **后端框架** | Python FastAPI | Node.js Express |
-| **SQL 解析** | sqlglot（Python） | sqlparse |
-| **数据库驱动** | SQLAlchemy | psycopg2（PostgreSQL 专用） |
-| **图布局算法** | Dagre（分层 DAG 布局） | ELK |
+### 6.3 全局图谱（GlobalGraph）
+
+```json
+{
+  "nodes": [
+    { "id": "orders", "label": "orders", "type": "source" },
+    { "id": "tmp_orders", "label": "tmp_orders", "type": "intermediate" },
+    { "id": "order_summary", "label": "order_summary", "type": "target" }
+  ],
+  "edges": [
+    {
+      "source": "orders",
+      "target": "tmp_orders",
+      "operation": "CREATE",
+      "script_id": "abc-123",
+      "statement_seq": 1
+    },
+    {
+      "source": "tmp_orders",
+      "target": "order_summary",
+      "operation": "INSERT",
+      "script_id": "abc-123",
+      "statement_seq": 2
+    }
+  ]
+}
+```
+
+> 全局图中的每条边都带有 `script_id`，用于按脚本筛选和高亮。
 
 ---
 
@@ -439,6 +538,8 @@
 ```
 POST /api/analyze
 ```
+
+分析完成后自动存入 Store 层，更新全局表和边。
 
 **请求体：**
 
@@ -455,160 +556,100 @@ POST /api/analyze
 }
 ```
 
-**响应体：**
+**响应体：** 返回完整的 AnalysisResult。
+
+### 7.2 脚本管理
+
+```
+GET    /api/scripts              # 脚本列表（摘要信息）
+GET    /api/scripts/{id}         # 脚本详情（完整 AnalysisResult）
+DELETE /api/scripts/{id}         # 删除脚本 + 清理关联边和孤立表
+PUT    /api/scripts/{id}/name    # 重命名脚本
+```
+
+**脚本列表响应：**
 
 ```json
-{
-  "analysis_id": "uuid",
-  "status": "completed",
-  "statement_group": {
-    "group_id": "uuid",
-    "statements": [
-      { "seq": 1, "type": "CREATE", "text": "CREATE TEMP TABLE tmp AS SELECT * FROM source_table" },
-      { "seq": 2, "type": "INSERT", "text": "INSERT INTO target_table SELECT * FROM tmp" }
-    ]
-  },
-  "tables": {
-    "from_database": ["source_table", "target_table"],
-    "from_script": ["tmp"]
-  },
-  "lineages": [
-    { "source": "source_table", "target": "tmp", "operation": "CREATE", "method": "execution_plan", "statement_seq": 1 },
-    { "source": "tmp", "target": "target_table", "operation": "INSERT", "method": "execution_plan", "statement_seq": 2 }
-  ],
-  "visualization": {
-    "nodes": [
-      { "id": "source_table", "label": "source_table", "type": "source" },
-      { "id": "tmp", "label": "tmp", "type": "intermediate" },
-      { "id": "target_table", "label": "target_table", "type": "target" }
-    ],
-    "edges": [
-      { "source": "source_table", "target": "tmp", "label": "CREATE", "statement_seq": 1 },
-      { "source": "tmp", "target": "target_table", "label": "INSERT", "statement_seq": 2 }
-    ]
+[
+  {
+    "analysis_id": "uuid",
+    "name": "ETL_订单汇总",
+    "statement_count": 2,
+    "table_count": 3,
+    "created_at": "2026-04-28T10:00:00",
+    "updated_at": "2026-04-28T10:00:00"
   }
-}
+]
 ```
 
-### 7.2 获取历史分析记录
+### 7.3 全局图谱
 
 ```
-GET /api/analyses?page=1&page_size=20
+GET /api/global-graph            # 全局累积图谱（所有节点 + 所有边）
+GET /api/tables                  # 全局表注册表
 ```
 
-### 7.3 获取单次分析详情
-
-```
-GET /api/analyses/{analysis_id}
-```
-
-### 7.4 修正语句解析结果
-
-用户在前端语句分段面板中修正解析结果后，提交修正并重新生成血缘关系。
-
-```
-PUT /api/analyses/{analysis_id}/statements/{seq}
-```
-
-**请求体：**
+**全局图谱响应：**
 
 ```json
 {
-  "corrected_text": "INSERT INTO target_table SELECT * FROM source_table_v2",
-  "tables_referenced": ["source_table_v2"],
-  "tables_modified": ["target_table"]
-}
-```
-
-**响应体：** 返回更新后的完整分析结果（同 7.1 响应格式）。
-
-### 7.5 获取预处理结果
-
-获取脚本预处理和分段后的结果，供前端展示。
-
-```
-GET /api/analyses/{analysis_id}/statements
-```
-
-**响应体：**
-
-```json
-{
-  "group_id": "uuid",
-  "original_script": "原始脚本全文",
-  "preprocessed_script": "预处理后全文",
-  "statements": [
-    { "seq": 1, "type": "CREATE", "text": "...", "tables_referenced": [...], "tables_created": [...] },
-    { "seq": 2, "type": "INSERT", "text": "...", "tables_referenced": [...], "tables_modified": [...] }
+  "nodes": [...],
+  "edges": [
+    { "source": "orders", "target": "report", "operation": "INSERT", "script_id": "abc", "statement_seq": 1 }
   ]
 }
 ```
 
+### 7.4 语句管理
+
+```
+GET /api/scripts/{id}/statements              # 获取语句分段
+PUT /api/scripts/{id}/statements/{seq}        # 修正语句解析结果
+```
+
 ---
 
-## 8. 验证方案
+## 8. 技术选型
 
-### 8.1 单元测试
+| 组件 | 推荐技术 | 说明 |
+|------|----------|------|
+| **前端框架** | React + TypeScript | 函数组件 + Hooks |
+| **UI 组件库** | Ant Design | 表单、列表、弹窗等 |
+| **可视化库** | @xyflow/react (React Flow) | 有向图渲染 |
+| **代码编辑器** | Monaco Editor | SQL 编辑 |
+| **后端框架** | Python FastAPI | REST API |
+| **SQL 解析** | sqlglot | AST 解析 |
+| **数据库驱动** | SQLAlchemy + psycopg2 | PostgreSQL 连接 |
+| **布局算法** | 自定义拓扑 BFS | 无第三方依赖 |
+| **持久化存储** | JSON 文件 | 轻量级，无需额外数据库 |
 
-| 测试对象 | 测试内容 |
-|----------|----------|
-| 预处理模块 | 注释移除、空格压缩、语句过滤 |
-| 语句拆分器 | 多语句脚本正确拆分、边界情况处理 |
-| 血缘提取器 | 各类 DML 语句的血缘关系正确提取 |
+---
 
-### 8.2 集成测试
+## 9. 验证方案
+
+### 9.1 单元测试
+
+| 测试对象 | 测试内容 | 测试数量 |
+|----------|----------|----------|
+| 预处理模块 | 注释移除、空格压缩、语句过滤 | 13 |
+| 语句拆分器 | 多语句脚本正确拆分、边界情况 | 28 |
+| 血缘提取器 | 各类 DML 语句的血缘关系提取 | 18 |
+| Store 持久化层 | 保存/列表/读取/删除、全局图谱、重命名 | 16 |
+
+### 9.2 集成测试
 
 - 连接真实数据库，执行 `EXPLAIN` 验证执行计划解析
-- 端到端测试：提交脚本 → 获取分析结果 → 渲染可视化图
+- 端到端测试：提交脚本 → 脚本列表新增 → 全局图谱更新 → 删除脚本 → 图谱自动清理
 
-### 8.3 测试用例示例
+### 9.3 测试用例（增量拼图验证）
 
-```sql
--- 测试用例1: 简单 INSERT-SELECT
-INSERT INTO summary_table (id, name, total)
-SELECT u.id, u.name, SUM(o.amount)
-FROM users u JOIN orders o ON u.id = o.user_id
-GROUP BY u.id, u.name;
+详见 `backend/tests/test_scripts.sql`，包含 6 个测试场景：
 
--- 期望血缘:
---   users → summary_table (INSERT)
---   orders → summary_table (INSERT)
+1. 简单 INSERT-SELECT（双源表 JOIN）
+2. 包含临时表的完整流程
+3. 多语句混合操作（INSERT + UPDATE）
+4. 带注释的复杂 ETL 脚本
+5. 多层临时表嵌套
+6. 包含被过滤的 DDL（ALTER/DROP 应被忽略）
 
--- 测试用例2: 多语句脚本
-INSERT INTO table_a SELECT * FROM table_b;
-UPDATE table_c SET col1 = (SELECT col1 FROM table_d);
-
--- 期望血缘:
---   table_b → table_a (INSERT)
---   table_d → table_c (UPDATE)
-
--- 测试用例3: 包含注释和空白
--- 这是一个注释
-INSERT /* 内联注释 */ INTO target
-SELECT * FROM source;
-
--- 期望: 预处理后正确解析
-
--- 测试用例4: 包含临时表/中间表
-CREATE TEMP TABLE tmp_order_detail AS
-SELECT o.order_id, o.amount, c.name
-FROM orders o JOIN customers c ON o.customer_id = c.id;
-
-INSERT INTO order_report (order_id, amount, customer_name)
-SELECT order_id, amount, name FROM tmp_order_detail;
-
--- 期望血缘:
---   orders → tmp_order_detail (CREATE)
---   customers → tmp_order_detail (CREATE)
---   tmp_order_detail → order_report (INSERT)
--- 期望分段存储:
---   #1 CREATE | "CREATE TEMP TABLE tmp_order_detail AS ..."
---   #2 INSERT | "INSERT INTO order_report ..."
-
--- 测试用例5: 执行计划 vs 静态解析
--- 当脚本包含视图或复杂子查询时，执行计划应能正确展开
-INSERT INTO target SELECT * FROM my_view;
--- 假设 my_view = SELECT * FROM table_a JOIN table_b ON ...
--- 静态解析只能识别: my_view → target
--- 执行计划应识别: table_a → target, table_b → target（视图展开）
-```
+**验证流程**：依次提交 6 个用例，验证全局图谱逐步累积，删除脚本后自动清理。

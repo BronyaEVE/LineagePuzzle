@@ -271,3 +271,144 @@ class TestRename:
 
     def test_rename_nonexistent(self):
         assert store.update_script_name("nonexistent", "name") is None
+
+
+class TestSchemaPrefixNormalization:
+    """schema 前缀归一化测试"""
+
+    def test_schema_prefix_not_duplicated_in_tables(self):
+        """带 schema 前缀的表名不会在全局注册表中产生重复"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_json(store.EDGES_FILE, [])
+
+        # 第一次: 不带前缀
+        store.save_script(_make_result("sp1"))
+        # 第二次: 带 public. 前缀（模拟 sqlglot 返回带前缀的表名）
+        store.save_script(_make_result(
+            "sp2",
+            lineages=[
+                Lineage(lineage_id="l-sp", source_table="public.orders", target_table="public.report",
+                        operation_type=OperationType.INSERT,
+                        extraction_method=ExtractionMethod.STATIC_ANALYSIS,
+                        statement_seq=1, dml_statement="INSERT INTO public.report SELECT * FROM public.orders;"),
+            ],
+            tables_db=[
+                TableInfo(table_name="public.orders", table_type=TableType.SOURCE, source="database"),
+                TableInfo(table_name="public.report", table_type=TableType.TARGET, source="database"),
+            ],
+            tables_script=[],
+            vis_nodes=[VisNode(id="orders", label="orders", type="source"),
+                       VisNode(id="report", label="report", type="target")],
+            vis_edges=[VisEdge(source="orders", target="report", label="INSERT", statement_seq=1)],
+            stmts=[Statement(seq=1, type=StatementType.INSERT,
+                             text="INSERT INTO public.report SELECT * FROM public.orders;",
+                             tables_referenced=["orders"], tables_modified=["report"])],
+        ))
+
+        tables = json.loads(store.TABLES_FILE.read_text())
+        # 不应该出现 "public.orders" 和 "orders" 两个 key
+        assert "orders" in tables
+        assert "report" in tables
+        assert "public.orders" not in tables
+        assert "public.report" not in tables
+
+    def test_schema_prefix_edges_normalized(self):
+        """边的 source/target 应被归一化"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_json(store.EDGES_FILE, [])
+
+        store.save_script(_make_result(
+            "sp3",
+            lineages=[
+                Lineage(lineage_id="l-sp3", source_table="analytics.raw_data", target_table="staging.cleaned",
+                        operation_type=OperationType.INSERT,
+                        extraction_method=ExtractionMethod.STATIC_ANALYSIS,
+                        statement_seq=1, dml_statement="INSERT INTO staging.cleaned SELECT * FROM analytics.raw_data;"),
+            ],
+            tables_db=[
+                TableInfo(table_name="analytics.raw_data", table_type=TableType.SOURCE, source="database"),
+                TableInfo(table_name="staging.cleaned", table_type=TableType.TARGET, source="database"),
+            ],
+            tables_script=[],
+            vis_nodes=[],
+            vis_edges=[],
+            stmts=[Statement(seq=1, type=StatementType.INSERT,
+                             text="INSERT INTO staging.cleaned SELECT * FROM analytics.raw_data;",
+                             tables_referenced=["raw_data"], tables_modified=["cleaned"])],
+        ))
+
+        edges = json.loads(store.EDGES_FILE.read_text())
+        assert len(edges) == 1
+        assert edges[0]["source"] == "raw_data"
+        assert edges[0]["target"] == "cleaned"
+
+    def test_cross_script_dedup_with_schema(self):
+        """跨脚本归一化: 一个脚本用 orders，另一个用 public.orders，应视为同一张表"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_json(store.EDGES_FILE, [])
+
+        # 脚本1: orders → report
+        store.save_script(_make_result("dedup1"))
+        tables1 = json.loads(store.TABLES_FILE.read_text())
+        count_orders = sum(1 for k in tables1 if k == "orders")
+        assert count_orders == 1
+
+        # 脚本2: public.orders → public.report（归一化后应合并）
+        store.save_script(_make_result(
+            "dedup2",
+            lineages=[
+                Lineage(lineage_id="l-dedup", source_table="public.orders", target_table="public.report",
+                        operation_type=OperationType.INSERT,
+                        extraction_method=ExtractionMethod.STATIC_ANALYSIS,
+                        statement_seq=1, dml_statement="INSERT INTO public.report SELECT * FROM public.orders;"),
+            ],
+            tables_db=[
+                TableInfo(table_name="public.orders", table_type=TableType.SOURCE, source="database"),
+                TableInfo(table_name="public.report", table_type=TableType.TARGET, source="database"),
+            ],
+            tables_script=[],
+            vis_nodes=[],
+            vis_edges=[],
+            stmts=[Statement(seq=1, type=StatementType.INSERT,
+                             text="INSERT INTO report SELECT * FROM orders;",
+                             tables_referenced=["orders"], tables_modified=["report"])],
+        ))
+        tables2 = json.loads(store.TABLES_FILE.read_text())
+        # orders 仍然只有一个 key（合并后 script_count 增加）
+        assert "orders" in tables2
+        assert "public.orders" not in tables2
+
+    def test_global_graph_normalized(self):
+        """全局图谱的节点应使用归一化名称"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_json(store.EDGES_FILE, [])
+
+        store.save_script(_make_result(
+            "gg-sp1",
+            lineages=[
+                Lineage(lineage_id="l-ggsp", source_table="public.src", target_table="dw.tgt",
+                        operation_type=OperationType.INSERT,
+                        extraction_method=ExtractionMethod.STATIC_ANALYSIS,
+                        statement_seq=1, dml_statement="INSERT INTO dw.tgt SELECT * FROM public.src;"),
+            ],
+            tables_db=[
+                TableInfo(table_name="public.src", table_type=TableType.SOURCE, source="database"),
+                TableInfo(table_name="dw.tgt", table_type=TableType.TARGET, source="database"),
+            ],
+            tables_script=[],
+            vis_nodes=[],
+            vis_edges=[],
+            stmts=[Statement(seq=1, type=StatementType.INSERT,
+                             text="INSERT INTO tgt SELECT * FROM src;",
+                             tables_referenced=["src"], tables_modified=["tgt"])],
+        ))
+
+        graph = store.get_global_graph()
+        node_ids = {n.id for n in graph.nodes}
+        assert "src" in node_ids
+        assert "tgt" in node_ids
+        assert "public.src" not in node_ids
+        assert "dw.tgt" not in node_ids
+        assert len(graph.edges) == 1
+        assert graph.edges[0].source == "src"
+        assert graph.edges[0].target == "tgt"

@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..models.analysis import AnalysisResult, GlobalEdge, GlobalGraph, ScriptSummary, VisNode
+from .normalize import normalize_table_name
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 TABLES_FILE = DATA_DIR / "tables.json"
@@ -76,9 +77,9 @@ def list_scripts() -> list[ScriptSummary]:
             vis = data.get("visualization") or {}
             tables_in_script = set()
             for s in stmts:
-                tables_in_script.update(s.get("tables_referenced", []))
-                tables_in_script.update(s.get("tables_created", []))
-                tables_in_script.update(s.get("tables_modified", []))
+                tables_in_script.update(normalize_table_name(t) for t in s.get("tables_referenced", []))
+                tables_in_script.update(normalize_table_name(t) for t in s.get("tables_created", []))
+                tables_in_script.update(normalize_table_name(t) for t in s.get("tables_modified", []))
             summaries.append(ScriptSummary(
                 analysis_id=data["analysis_id"],
                 name=data.get("name", ""),
@@ -177,7 +178,7 @@ def _merge_tables(result: AnalysisResult):
 
     all_table_infos = list(result.database_info.tables_from_db) + list(result.database_info.tables_from_script)
     for ti in all_table_infos:
-        name = ti.table_name
+        name = normalize_table_name(ti.table_name)
         if name in tables:
             tables[name]["script_count"] = tables[name].get("script_count", 0) + 1
             tables[name]["last_seen"] = now
@@ -199,6 +200,7 @@ def _merge_tables(result: AnalysisResult):
     # 也从 lineages 中收集表（确保不遗漏）
     for lin in result.lineages:
         for tname in [lin.source_table, lin.target_table]:
+            tname = normalize_table_name(tname)
             if tname and tname not in tables:
                 tables[tname] = {
                     "schema": "public",
@@ -224,8 +226,8 @@ def _merge_edges(result: AnalysisResult):
             continue
         edges.append({
             "edge_id": str(uuid.uuid4()),
-            "source": lin.source_table,
-            "target": lin.target_table,
+            "source": normalize_table_name(lin.source_table),
+            "target": normalize_table_name(lin.target_table),
             "operation": lin.operation_type.value if hasattr(lin.operation_type, "value") else str(lin.operation_type),
             "script_id": result.analysis_id,
             "statement_seq": lin.statement_seq,

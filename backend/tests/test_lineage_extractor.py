@@ -223,3 +223,73 @@ class TestEdgeCases:
         assert len(lineages) == 1
         assert lineages[0].target_table == "target"
         assert lineages[0].source_table == ""
+
+
+class TestSchemaPrefixedTables:
+    """带 schema/catalog 前缀的表名处理测试"""
+
+    def test_insert_with_schema_prefix(self):
+        """INSERT 中源表带 schema 前缀"""
+        ref, created, modified = _extract_tables_via_ast(
+            "INSERT INTO target_table SELECT * FROM public.source_table;"
+        )
+        assert "source_table" in ref
+        assert "target_table" in modified
+
+    def test_insert_both_with_schema(self):
+        """INSERT 源表和目标表都带 schema 前缀"""
+        ref, created, modified = _extract_tables_via_ast(
+            "INSERT INTO public.target_table SELECT * FROM public.source_table;"
+        )
+        assert "source_table" in ref
+        assert "target_table" in modified
+
+    def test_join_with_schema_prefix(self):
+        """JOIN 中多个表带不同 schema 前缀"""
+        ref, _, _ = _extract_tables_via_ast(
+            "INSERT INTO report SELECT * FROM public.orders o JOIN analytics.customers c ON o.cid = c.id;"
+        )
+        assert "orders" in ref
+        assert "customers" in ref
+
+    def test_create_with_schema_prefix(self):
+        """CREATE TABLE 带.schema 前缀"""
+        ref, created, modified = _extract_tables_via_ast(
+            "CREATE TABLE public.tmp_orders AS SELECT * FROM source;"
+        )
+        assert "source" in ref
+        assert "tmp_orders" in created
+
+    def test_schema_prefix_no_duplicates(self):
+        """同一张表有/无 schema 前缀不应产生重复"""
+        ref, _, _ = _extract_tables_via_ast(
+            "INSERT INTO t SELECT a.x FROM public.src a JOIN src b ON a.id = b.id;"
+        )
+        # "src" 和 "public.src" 应归一化为同一个名称
+        assert ref.count("src") == 1
+
+    def test_schema_lineage_normalized(self):
+        """血缘关系中的表名应被归一化"""
+        stmts = [
+            _make_stmt(1, StatementType.INSERT,
+                       "INSERT INTO public.report SELECT * FROM public.orders;")
+        ]
+        lineages, type_map = extract_lineages(stmts)
+        assert len(lineages) == 1
+        assert lineages[0].source_table == "orders"
+        assert lineages[0].target_table == "report"
+
+    def test_cross_schema_lineage(self):
+        """跨 schema 的血缘链路"""
+        stmts = [
+            _make_stmt(1, StatementType.CREATE,
+                       "CREATE TEMP TABLE tmp AS SELECT * FROM staging.raw_data;"),
+            _make_stmt(2, StatementType.INSERT,
+                       "INSERT INTO public.report SELECT * FROM tmp;"),
+        ]
+        lineages, type_map = extract_lineages(stmts)
+        assert len(lineages) == 2
+        # staging.raw_data → tmp → report
+        src_lin = [l for l in lineages if l.source_table == "raw_data"][0]
+        assert src_lin.target_table == "tmp"
+

@@ -12,12 +12,14 @@ from ..models.lineage import (
     TableType,
 )
 from ..models.statement import Statement, StatementType
+from .normalize import normalize_table_name
 
 
 def _extract_tables_via_ast(stmt_text: str) -> tuple[list[str], list[str], list[str]]:
     """使用 sqlglot 静态解析 SQL AST，提取表名。
 
     返回 (referenced_tables, created_tables, modified_tables)
+    所有表名经过归一化处理（去除 schema/catalog 前缀）。
     """
     referenced: list[str] = []
     created: list[str] = []
@@ -28,18 +30,19 @@ def _extract_tables_via_ast(stmt_text: str) -> tuple[list[str], list[str], list[
     except Exception:
         return referenced, created, modified
 
-    # 提取所有引用的表
+    # 提取所有引用的表（归一化表名）
     for table in parsed.find_all(sqlglot.exp.Table):
-        name = table.name
+        # sqlglot 的 table.name 只返回表名部分，不含 schema/catalog
+        # 但为安全起见仍然做归一化
+        name = normalize_table_name(table.name)
         if name and name not in referenced:
             referenced.append(name)
 
     # 判断语句类型并分类
     if isinstance(parsed, sqlglot.exp.Create):
-        # CREATE TABLE ... AS SELECT ...
         table_expr = parsed.find(sqlglot.exp.Table)
         if table_expr:
-            name = table_expr.name
+            name = normalize_table_name(table_expr.name)
             if name in referenced:
                 referenced.remove(name)
             if name not in created:
@@ -47,7 +50,7 @@ def _extract_tables_via_ast(stmt_text: str) -> tuple[list[str], list[str], list[
     elif isinstance(parsed, sqlglot.exp.Insert):
         table_expr = parsed.find(sqlglot.exp.Table)
         if table_expr:
-            name = table_expr.name
+            name = normalize_table_name(table_expr.name)
             if name in referenced:
                 referenced.remove(name)
             if name not in modified:
@@ -55,7 +58,7 @@ def _extract_tables_via_ast(stmt_text: str) -> tuple[list[str], list[str], list[
     elif isinstance(parsed, sqlglot.exp.Update):
         table_expr = parsed.find(sqlglot.exp.Table)
         if table_expr:
-            name = table_expr.name
+            name = normalize_table_name(table_expr.name)
             if name in referenced:
                 referenced.remove(name)
             if name not in modified:
@@ -63,7 +66,7 @@ def _extract_tables_via_ast(stmt_text: str) -> tuple[list[str], list[str], list[
     elif isinstance(parsed, sqlglot.exp.Delete):
         table_expr = parsed.find(sqlglot.exp.Table)
         if table_expr:
-            name = table_expr.name
+            name = normalize_table_name(table_expr.name)
             if name in referenced:
                 referenced.remove(name)
             if name not in modified:
