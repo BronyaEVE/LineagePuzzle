@@ -13,47 +13,45 @@ from .preprocessor import preprocess
 from .splitter import split_statements
 
 
-def analyze(script: str, db_config: DatabaseConfig) -> AnalysisResult:
-    """完整分析编排：预处理 → 拆分 → 数据库连接 → 血缘提取 → 结果组装。"""
+def analyze(script: str, db_config: DatabaseConfig | None) -> AnalysisResult:
+    """完整分析编排：预处理 → 拆分 → 血缘提取（AST）→ DB 校验（可选）→ 结果组装。
+
+    DESIGN.v2 §3.1/§5.5：血缘提取统一走 sqlglot AST，无外部依赖、可离线运行。
+    db_config 为 None 时进入纯 AST 模式（ast_only），不连接数据库。
+
+    db_config 提供时，DB 连接仅用于读 INFORMATION_SCHEMA 校验表存在性 / 补充列信息，
+    不参与血缘提取（不再执行 EXPLAIN）。DB 连接失败时降级为 ast_only。
+    """
 
     # 步骤1+2: 预处理和拆分
     cleaned = preprocess(script)
     group = split_statements(cleaned, original_script=script)
 
-    # 步骤3: 连接数据库
-    db: DBConnector | None = None
-    execution_plans: dict[int, dict] = {}
+    # 步骤3: 提取血缘关系（纯 AST，不依赖 DB）
+    lineages, table_type_map = extract_lineages(group.statements)
+
+    # 步骤4: 可选的 DB 校验（仅读表结构，不执行 EXPLAIN）
     db_tables: list[TableInfo] = []
-
-    try:
-        db = DBConnector(
-            host=db_config.host,
-            port=db_config.port,
-            database=db_config.database,
-            username=db_config.username,
-            password=db_config.password,
-        )
-
-        # 子模块 A: 获取表结构
-        db_tables = db.get_tables_info()
-
-        # 子模块 B: 获取执行计划
-        for stmt in group.statements:
-            if stmt.type.value in ("INSERT", "UPDATE", "DELETE", "MERGE"):
-                try:
-                    plan = db.get_execution_plan(stmt.text)
-                    if plan:
-                        execution_plans[stmt.seq] = plan
-                except Exception:
-                    pass  # 执行计划获取失败不影响整体流程
-    except Exception:
-        pass  # 数据库连接失败时，仍可通过静态解析进行基本分析
-    finally:
-        if db:
-            db.dispose()
-
-    # 步骤4: 提取血缘关系
-    lineages, table_type_map = extract_lineages(group.statements, execution_plans)
+    extraction_mode = "ast_only"
+    if db_config is not None:
+        db: DBConnector | None = None
+        try:
+            db = DBConnector(
+                host=db_config.host,
+                port=db_config.port,
+                database=db_config.database,
+                username=db_config.username,
+                password=db_config.password,
+            )
+            # 子模块 A: 获取表结构（用于校验表存在性 + 补充列信息）
+            db_tables = db.get_tables_info()
+            extraction_mode = "ast_with_db_validation"
+        except Exception:
+            # 数据库连接失败时降级为纯 AST 模式，仍返回血缘结果
+            extraction_mode = "ast_only"
+        finally:
+            if db:
+                db.dispose()
 
     # 补充脚本中新建表的信息
     script_tables = _build_script_tables(group, table_type_map)
@@ -72,6 +70,7 @@ def analyze(script: str, db_config: DatabaseConfig) -> AnalysisResult:
         statement_group=group,
         lineages=lineages,
         visualization=visualization,
+        extraction_mode=extraction_mode,
     )
 
 

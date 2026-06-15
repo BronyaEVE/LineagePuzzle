@@ -26,7 +26,7 @@ class TableInfo(BaseModel):
 
 
 class ExtractionMethod(str, Enum):
-    EXECUTION_PLAN = "execution_plan"
+    # DESIGN.v2 §5.5：AST 为唯一血缘提取来源，不再使用执行计划
     STATIC_ANALYSIS = "static_analysis"
 
 
@@ -49,7 +49,7 @@ class Lineage(BaseModel):
     source_table: str
     target_table: str
     operation_type: OperationType
-    extraction_method: ExtractionMethod = ExtractionMethod.EXECUTION_PLAN
+    extraction_method: ExtractionMethod = ExtractionMethod.STATIC_ANALYSIS
     statement_seq: int
     column_mappings: list[ColumnMapping] = Field(default_factory=list)
     dml_statement: str = ""

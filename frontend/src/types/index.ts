@@ -10,7 +10,8 @@ export interface DatabaseConfig {
 
 export interface AnalyzeRequest {
   script: string;
-  database_config: DatabaseConfig;
+  // DESIGN.v2 §7.1：可选。不提供时纯 AST 模式（ast_only）分析，不连接数据库
+  database_config: DatabaseConfig | null;
 }
 
 export interface CorrectStatementRequest {
@@ -23,7 +24,7 @@ export interface CorrectStatementRequest {
 
 export type StatementType = "CREATE" | "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "UNKNOWN";
 export type TableType = "source" | "intermediate" | "target";
-export type ExtractionMethod = "execution_plan" | "static_analysis";
+export type ExtractionMethod = "static_analysis";
 export type OperationType = "CREATE" | "INSERT" | "UPDATE" | "DELETE" | "MERGE";
 
 export interface Statement {
@@ -105,6 +106,8 @@ export interface AnalysisResult {
   statement_group: StatementGroup | null;
   lineages: Lineage[];
   visualization: Visualization;
+  // DESIGN.v2 §4.3：ast_only | ast_with_db_validation
+  extraction_mode: string;
 }
 
 // === 脚本管理 ===

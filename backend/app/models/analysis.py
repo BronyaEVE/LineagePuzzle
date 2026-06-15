@@ -39,6 +39,10 @@ class AnalysisResult(BaseModel):
     statement_group: StatementGroup | None = None
     lineages: list[Lineage] = Field(default_factory=list)
     visualization: Visualization = Field(default_factory=Visualization)
+    # DESIGN.v2 §4.3：标记本次分析用了哪种模式
+    #   ast_only             —— 无 DB 连接，纯 AST 提取
+    #   ast_with_db_validation —— 有 DB 连接，AST 提取 + 表结构校验/列补充
+    extraction_mode: str = "ast_only"
 
 
 class ScriptSummary(BaseModel):

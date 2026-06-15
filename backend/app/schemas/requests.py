@@ -11,7 +11,8 @@ class DatabaseConfig(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     script: str = Field(..., min_length=1, description="DML 脚本文本")
-    database_config: DatabaseConfig
+    # DESIGN.v2 §7.1：database_config 可选。不提供时以纯 AST 模式（ast_only）分析，不连接数据库。
+    database_config: DatabaseConfig | None = None
 
 
 class CorrectStatementRequest(BaseModel):

@@ -96,24 +96,24 @@ def _extract_tables_via_ast(stmt_text: str) -> tuple[list[str], list[str], list[
 
 def extract_lineages(
     statements: list[Statement],
-    execution_plans: dict[int, dict] | None = None,
 ) -> tuple[list[Lineage], dict[str, TableType]]:
-    """从语句列表中提取血缘关系。
+    """从语句列表中提取血缘关系（基于 sqlglot AST 静态解析）。
+
+    DESIGN.v2 §5.5：AST 为唯一血缘提取来源，确定性强、无外部依赖、可离线运行。
+    数据库连接（如有）仅用于校验表存在性与补充列信息，不影响血缘结果。
 
     参数:
         statements: 拆分后的语句列表
-        execution_plans: 可选，语句序号到执行计划 JSON 的映射
 
     返回:
         (lineages, table_type_map)
         table_type_map: {table_name: TableType} 记录每个表的类型
     """
-    execution_plans = execution_plans or {}
     lineages: list[Lineage] = []
     table_type_map: dict[str, TableType] = {}
 
     for stmt in statements:
-        # 先通过 AST 填充语句的表引用信息
+        # 通过 AST 填充语句的表引用信息
         ref, created, modified = _extract_tables_via_ast(stmt.text)
         stmt.tables_referenced = ref
         stmt.tables_created = created
@@ -129,56 +129,20 @@ def extract_lineages(
             if t not in table_type_map:
                 table_type_map[t] = TableType.SOURCE
 
-        # 优先使用执行计划提取血缘
-        plan = execution_plans.get(stmt.seq)
-        if plan:
-            _extract_from_plan(stmt, plan, lineages, table_type_map)
-        else:
-            # 回退到静态解析
-            _extract_from_ast(stmt, lineages)
+        # 基于 AST 提取血缘
+        _extract_from_ast(stmt, lineages)
 
     return lineages, table_type_map
 
 
-def _extract_from_plan(
-    stmt: Statement,
-    plan_data: dict,
-    lineages: list[Lineage],
-    table_type_map: dict[str, TableType],
-) -> None:
-    """基于执行计划提取血缘关系。"""
-    source_tables = stmt.tables_referenced
-    target_tables = stmt.tables_created + stmt.tables_modified
-
-    if not source_tables or not target_tables:
-        # 执行计划可能补充了额外信息，但核心依赖 AST 结果
-        return
-
-    op_type = _stmt_type_to_op(stmt.type)
-    for src in source_tables:
-        for tgt in target_tables:
-            lineages.append(
-                Lineage(
-                    lineage_id=str(uuid.uuid4()),
-                    source_table=src,
-                    target_table=tgt,
-                    operation_type=op_type,
-                    extraction_method=ExtractionMethod.EXECUTION_PLAN,
-                    statement_seq=stmt.seq,
-                    dml_statement=stmt.text,
-                )
-            )
-
-
 def _extract_from_ast(stmt: Statement, lineages: list[Lineage]) -> None:
-    """基于静态 AST 解析提取血缘关系（执行计划不可用时的补充）。"""
+    """基于静态 AST 解析提取血缘关系。"""
     source_tables = stmt.tables_referenced
     target_tables = stmt.tables_created + stmt.tables_modified
 
-    if not target_tables:
-        return
-
     op_type = _stmt_type_to_op(stmt.type)
+
+    # 有源表和目标表：为每个 (src, tgt) 组合生成一条边
     for src in source_tables:
         for tgt in target_tables:
             lineages.append(

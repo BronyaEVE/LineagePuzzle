@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-import json
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from ..models.lineage import ColumnInfo, TableInfo, TableType
-from .normalize import normalize_table_name
 
 
 class DBConnector:
-    """与 PVC 数据库交互，提供表结构信息和执行计划获取两个子模块。"""
+    """与 PostgreSQL 数据库交互，仅用于表结构校验与列信息补充。
+
+    DESIGN.v2 §5.4：本模块不执行 EXPLAIN 来提取血缘，血缘提取统一走
+    sqlglot AST（见 lineage_extractor）。DB 连接仅提供：
+      - 表是否存在（INFORMATION_SCHEMA.TABLES）
+      - 列信息补充（INFORMATION_SCHEMA.COLUMNS）
+    """
 
     def __init__(self, host: str, port: int, database: str, username: str, password: str):
         url = f"postgresql+psycopg2://{username}:{password}@{host}:{port}/{database}"
@@ -78,89 +82,6 @@ class DBConnector:
                 {"schema": schema, "name": table_name},
             ).fetchone()
         return row is not None
-
-    # ===================== 子模块 B: 执行计划获取 =====================
-
-    def get_execution_plan(self, sql: str) -> dict:
-        """对 SQL 语句执行 EXPLAIN (FORMAT JSON)，返回执行计划 JSON。
-
-        注意：不会实际执行 DML 语句，EXPLAIN 只生成计划。
-        """
-        explain_sql = f"EXPLAIN (FORMAT JSON) {sql.rstrip(';')}"
-        with self._connect() as conn:
-            result = conn.execute(text(explain_sql)).fetchone()
-        if result is None:
-            return {}
-        # PostgreSQL 返回的 JSON 可能是字符串
-        plan_data = result[0]
-        if isinstance(plan_data, str):
-            return json.loads(plan_data)
-        return plan_data
-
-    def extract_tables_from_plan(self, plan_data: dict | list) -> tuple[list[str], list[str]]:
-        """从执行计划 JSON 中递归提取源表和目标表。
-
-        返回 (source_tables, target_tables)
-        """
-        source_tables: list[str] = []
-        target_tables: list[str] = []
-
-        if isinstance(plan_data, list):
-            for item in plan_data:
-                s, t = self.extract_tables_from_plan(item)
-                source_tables.extend(s)
-                target_tables.extend(t)
-            return source_tables, target_tables
-
-        if not isinstance(plan_data, dict):
-            return source_tables, target_tables
-
-        plan = plan_data.get("Plan", plan_data)
-
-        # 提取表名
-        # PostgreSQL 执行计划中，schema 信息在单独的 "Schema" 字段，
-        # Relation Name / Alias 只有纯表名。这里拼接成全限定名后再归一化。
-        node_type = plan.get("Node Type", "")
-        relation_name = plan.get("Relation Name")
-        relation_schema = plan.get("Schema")
-        # 某些节点用 Alias
-        alias = plan.get("Alias")
-
-        if relation_name:
-            if relation_schema:
-                table = normalize_table_name(f"{relation_schema}.{relation_name}")
-            else:
-                table = normalize_table_name(relation_name)
-        elif alias and node_type in ("Seq Scan", "Index Scan", "Index Only Scan", "Bitmap Heap Scan"):
-            if relation_schema:
-                table = normalize_table_name(f"{relation_schema}.{alias}")
-            else:
-                table = normalize_table_name(alias)
-        else:
-            table = None
-
-        if table:
-            # 判断是读还是写
-            if node_type in ("ModifyTable", "Insert", "Update", "Delete"):
-                operation = plan.get("Operation", "").upper()
-                if operation in ("INSERT", "UPDATE", "DELETE") or node_type == "ModifyTable":
-                    target_tables.append(table)
-                else:
-                    source_tables.append(table)
-            else:
-                source_tables.append(table)
-
-        # 递归处理子计划
-        for sub in ("Plans", "SubPlans", "InitPlan"):
-            children = plan.get(sub, [])
-            if isinstance(children, list):
-                for child in children:
-                    s, t = self.extract_tables_from_plan(child)
-                    source_tables.extend(s)
-                    target_tables.extend(t)
-
-        # 去重
-        return list(dict.fromkeys(source_tables)), list(dict.fromkeys(target_tables))
 
     def dispose(self):
         self._engine.dispose()

@@ -165,44 +165,6 @@ class TestExtractLineagesStatic:
         assert "public.target" in stmts[0].tables_modified
 
 
-class TestExtractLineagesWithPlan:
-    """使用执行计划的血缘提取测试"""
-
-    def test_execution_plan_takes_priority(self):
-        """执行计划优先级高于静态解析"""
-        stmts = [_make_stmt(1, StatementType.INSERT, "INSERT INTO target SELECT * FROM source;")]
-        # 提供一个空的执行计划（模拟 EXPLAIN 返回）
-        plans = {1: {"Plan": {"Node Type": "ModifyTable"}}}
-        lineages, _ = extract_lineages(stmts, execution_plans=plans)
-
-        # 有执行计划时使用 execution_plan 方法
-        assert len(lineages) == 1
-        assert lineages[0].extraction_method == ExtractionMethod.EXECUTION_PLAN
-
-    def test_fallback_to_static_when_no_plan(self):
-        """无执行计划时回退到静态解析"""
-        stmts = [_make_stmt(1, StatementType.INSERT, "INSERT INTO target SELECT * FROM source;")]
-        lineages, _ = extract_lineages(stmts)
-
-        assert len(lineages) == 1
-        assert lineages[0].extraction_method == ExtractionMethod.STATIC_ANALYSIS
-
-    def test_mixed_plan_and_static(self):
-        """部分语句有执行计划，部分没有"""
-        stmts = [
-            _make_stmt(1, StatementType.CREATE, "CREATE TEMP TABLE tmp AS SELECT * FROM src;"),
-            _make_stmt(2, StatementType.INSERT, "INSERT INTO tgt SELECT * FROM tmp;"),
-        ]
-        # 只给第二条语句提供执行计划
-        plans = {2: {"Plan": {"Node Type": "ModifyTable"}}}
-        lineages, _ = extract_lineages(stmts, execution_plans=plans)
-
-        seq1_lin = [l for l in lineages if l.statement_seq == 1]
-        seq2_lin = [l for l in lineages if l.statement_seq == 2]
-        assert all(l.extraction_method == ExtractionMethod.STATIC_ANALYSIS for l in seq1_lin)
-        assert all(l.extraction_method == ExtractionMethod.EXECUTION_PLAN for l in seq2_lin)
-
-
 class TestEdgeCases:
     """边界情况测试"""
 
