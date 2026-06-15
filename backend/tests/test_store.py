@@ -1,4 +1,8 @@
-"""Store 持久化存储层测试"""
+"""Store 持久化存储层测试
+
+新语义：表名规范化为 `schema.table` 全限定名，裸表名补 public。
+跨 schema 同名表（public.orders vs reporting.orders）视为不同节点。
+"""
 import sys
 import os
 import json
@@ -23,17 +27,20 @@ def _make_result(
     vis_edges=None,
     stmts=None,
 ):
-    """构建测试用 AnalysisResult"""
+    """构建测试用 AnalysisResult
+
+    默认使用全限定名 (public.xxx) 作为表标识。
+    """
     if lineages is None:
         lineages = [
             Lineage(
-                lineage_id="l1", source_table="orders", target_table="tmp",
+                lineage_id="l1", source_table="public.orders", target_table="public.tmp",
                 operation_type=OperationType.CREATE,
                 extraction_method=ExtractionMethod.STATIC_ANALYSIS,
                 statement_seq=1, dml_statement="CREATE TEMP TABLE tmp AS SELECT * FROM orders;",
             ),
             Lineage(
-                lineage_id="l2", source_table="tmp", target_table="report",
+                lineage_id="l2", source_table="public.tmp", target_table="public.report",
                 operation_type=OperationType.INSERT,
                 extraction_method=ExtractionMethod.STATIC_ANALYSIS,
                 statement_seq=2, dml_statement="INSERT INTO report SELECT * FROM tmp;",
@@ -41,28 +48,28 @@ def _make_result(
         ]
     if tables_db is None:
         tables_db = [
-            TableInfo(table_name="orders", table_type=TableType.SOURCE, source="database"),
-            TableInfo(table_name="report", table_type=TableType.TARGET, source="database"),
+            TableInfo(schema_name="public", table_name="orders", table_type=TableType.SOURCE, source="database"),
+            TableInfo(schema_name="public", table_name="report", table_type=TableType.TARGET, source="database"),
         ]
     if tables_script is None:
         tables_script = [
-            TableInfo(table_name="tmp", table_type=TableType.INTERMEDIATE, source="script_created"),
+            TableInfo(schema_name="public", table_name="tmp", table_type=TableType.INTERMEDIATE, source="script_created"),
         ]
     if vis_nodes is None:
-        vis_nodes = [VisNode(id="orders", label="orders", type="source"),
-                     VisNode(id="tmp", label="tmp", type="intermediate"),
-                     VisNode(id="report", label="report", type="target")]
+        vis_nodes = [VisNode(id="public.orders", label="orders", type="source"),
+                     VisNode(id="public.tmp", label="tmp", type="intermediate"),
+                     VisNode(id="public.report", label="report", type="target")]
     if vis_edges is None:
-        vis_edges = [VisEdge(source="orders", target="tmp", label="CREATE", statement_seq=1),
-                     VisEdge(source="tmp", target="report", label="INSERT", statement_seq=2)]
+        vis_edges = [VisEdge(source="public.orders", target="public.tmp", label="CREATE", statement_seq=1),
+                     VisEdge(source="public.tmp", target="public.report", label="INSERT", statement_seq=2)]
     if stmts is None:
         stmts = [
             Statement(seq=1, type=StatementType.CREATE,
                       text="CREATE TEMP TABLE tmp AS SELECT * FROM orders;",
-                      tables_referenced=["orders"], tables_created=["tmp"]),
+                      tables_referenced=["public.orders"], tables_created=["public.tmp"]),
             Statement(seq=2, type=StatementType.INSERT,
                       text="INSERT INTO report SELECT * FROM tmp;",
-                      tables_referenced=["tmp"], tables_modified=["report"]),
+                      tables_referenced=["public.tmp"], tables_modified=["public.report"]),
         ]
 
     return AnalysisResult(
@@ -90,8 +97,9 @@ def setup_module():
     _original_data_dir = store.DATA_DIR
     store.DATA_DIR = pathlib.Path(tempfile.mkdtemp())
     store.TABLES_FILE = store.DATA_DIR / "tables.json"
-    store.EDGES_FILE = store.DATA_DIR / "edges.json"
+    store.EDGES_FILE = store.DATA_DIR / "edges.jsonl"
     store.SCRIPTS_DIR = store.DATA_DIR / "scripts"
+    store.LOCK_FILE = store.DATA_DIR / "store.lock"
 
 
 def teardown_module():
@@ -100,8 +108,14 @@ def teardown_module():
         shutil.rmtree(str(store.DATA_DIR), ignore_errors=True)
         store.DATA_DIR = _original_data_dir
         store.TABLES_FILE = store.DATA_DIR / "tables.json"
-        store.EDGES_FILE = store.DATA_DIR / "edges.json"
+        store.EDGES_FILE = store.DATA_DIR / "edges.jsonl"
         store.SCRIPTS_DIR = store.DATA_DIR / "scripts"
+        store.LOCK_FILE = store.DATA_DIR / "store.lock"
+
+
+def _read_edges():
+    """测试辅助：读取 JSONL 格式的 edges 并解析为 list[dict]。"""
+    return store._read_edges()
 
 
 import pathlib
@@ -132,7 +146,7 @@ class TestSaveAndList:
         s = [x for x in summaries if x.analysis_id == "s4"][0]
         assert s.name == "摘要测试"
         assert s.statement_count == 2
-        assert s.table_count >= 3  # orders, tmp, report
+        assert s.table_count >= 3  # public.orders, public.tmp, public.report
 
     def test_auto_naming(self):
         result = _make_result("s5", name="")
@@ -164,10 +178,10 @@ class TestGetAndDelete:
 
     def test_delete_removes_edges(self):
         store.save_script(_make_result("d2"))
-        edges_before = json.loads(store.EDGES_FILE.read_text())
+        edges_before = _read_edges()
         assert any(e["script_id"] == "d2" for e in edges_before)
         store.delete_script("d2")
-        edges_after = json.loads(store.EDGES_FILE.read_text())
+        edges_after = _read_edges()
         assert not any(e["script_id"] == "d2" for e in edges_after)
 
     def test_delete_cleans_orphan_tables(self):
@@ -181,10 +195,10 @@ class TestGetAndDelete:
                 store.delete_script(data["analysis_id"])
         # 重新保存确保只有 d3
         store._write_json(store.TABLES_FILE, {})
-        store._write_json(store.EDGES_FILE, [])
+        store._write_edges([])
         store.save_script(_make_result("d3"))
         tables_before = json.loads(store.TABLES_FILE.read_text())
-        assert "tmp" in tables_before
+        assert "public.tmp" in tables_before
         store.delete_script("d3")
         tables_after = json.loads(store.TABLES_FILE.read_text())
         assert len(tables_after) == 0
@@ -195,7 +209,7 @@ class TestGlobalGraph:
 
     def test_single_script_graph(self):
         store._write_json(store.TABLES_FILE, {})
-        store._write_json(store.EDGES_FILE, [])
+        store._write_edges([])
         store.save_script(_make_result("gg1"))
         graph = store.get_global_graph()
         assert len(graph.nodes) == 3
@@ -204,7 +218,7 @@ class TestGlobalGraph:
     def test_cumulative_graph(self):
         """两个脚本累积后图谱应合并"""
         store._write_json(store.TABLES_FILE, {})
-        store._write_json(store.EDGES_FILE, [])
+        store._write_edges([])
 
         # 脚本1: orders → tmp → report
         store.save_script(_make_result("gg2"))
@@ -212,48 +226,48 @@ class TestGlobalGraph:
         result2 = _make_result(
             "gg3", name="脚本2",
             lineages=[
-                Lineage(lineage_id="l3", source_table="customers", target_table="report",
+                Lineage(lineage_id="l3", source_table="public.customers", target_table="public.report",
                         operation_type=OperationType.INSERT,
                         extraction_method=ExtractionMethod.STATIC_ANALYSIS,
                         statement_seq=1, dml_statement="INSERT INTO report SELECT * FROM customers;"),
             ],
             tables_db=[
-                TableInfo(table_name="customers", table_type=TableType.SOURCE, source="database"),
-                TableInfo(table_name="report", table_type=TableType.TARGET, source="database"),
+                TableInfo(schema_name="public", table_name="customers", table_type=TableType.SOURCE, source="database"),
+                TableInfo(schema_name="public", table_name="report", table_type=TableType.TARGET, source="database"),
             ],
             tables_script=[],
-            vis_nodes=[VisNode(id="customers", label="customers", type="source"),
-                       VisNode(id="report", label="report", type="target")],
-            vis_edges=[VisEdge(source="customers", target="report", label="INSERT", statement_seq=1)],
+            vis_nodes=[VisNode(id="public.customers", label="customers", type="source"),
+                       VisNode(id="public.report", label="report", type="target")],
+            vis_edges=[VisEdge(source="public.customers", target="public.report", label="INSERT", statement_seq=1)],
             stmts=[Statement(seq=1, type=StatementType.INSERT,
                              text="INSERT INTO report SELECT * FROM customers;",
-                             tables_referenced=["customers"], tables_modified=["report"])],
+                             tables_referenced=["public.customers"], tables_modified=["public.report"])],
         )
         store.save_script(result2)
 
         graph = store.get_global_graph()
-        assert len(graph.nodes) == 4  # orders, tmp, report, customers
+        assert len(graph.nodes) == 4  # public.orders, public.tmp, public.report, public.customers
         assert len(graph.edges) == 3   # orders→tmp, tmp→report, customers→report
 
         # report 同时是 source 也是 target → intermediate
-        report_node = [n for n in graph.nodes if n.id == "report"][0]
+        report_node = [n for n in graph.nodes if n.id == "public.report"][0]
         # 注意：tmp 也是 intermediate（既是 source 也是 target）
 
     def test_node_type_evolution(self):
         """表角色随多次分析演化"""
         store._write_json(store.TABLES_FILE, {})
-        store._write_json(store.EDGES_FILE, [])
+        store._write_edges([])
 
         # 第一次：orders → tmp（tmp 是 target）
         store.save_script(_make_result("ev1"))
         graph1 = store.get_global_graph()
-        tmp1 = [n for n in graph1.nodes if n.id == "tmp"][0]
+        tmp1 = [n for n in graph1.nodes if n.id == "public.tmp"][0]
         assert tmp1.type == "intermediate"  # 既是 target 也是 source（因为有 tmp→report）
 
     def test_edge_has_script_id(self):
         """全局边应标注来源脚本"""
         store._write_json(store.TABLES_FILE, {})
-        store._write_json(store.EDGES_FILE, [])
+        store._write_edges([])
         store.save_script(_make_result("sid1"))
         graph = store.get_global_graph()
         for edge in graph.edges:
@@ -273,49 +287,275 @@ class TestRename:
         assert store.update_script_name("nonexistent", "name") is None
 
 
-class TestSchemaPrefixNormalization:
-    """schema 前缀归一化测试"""
+class TestJsonlFormat:
+    """edges.jsonl JSON Lines 格式测试"""
 
-    def test_schema_prefix_not_duplicated_in_tables(self):
-        """带 schema 前缀的表名不会在全局注册表中产生重复"""
+    def test_edges_file_extension(self):
+        """edges 文件应为 .jsonl 后缀"""
+        assert store.EDGES_FILE.name == "edges.jsonl"
+
+    def test_each_line_is_valid_json(self):
+        """edges.jsonl 每行必须是一个独立的合法 JSON 对象"""
         store._write_json(store.TABLES_FILE, {})
-        store._write_json(store.EDGES_FILE, [])
+        store._write_edges([])
+        store.save_script(_make_result("jsonl1"))
 
-        # 第一次: 不带前缀
-        store.save_script(_make_result("sp1"))
-        # 第二次: 带 public. 前缀（模拟 sqlglot 返回带前缀的表名）
+        # 逐行解析，每行都应是合法 JSON
+        lines = store.EDGES_FILE.read_text(encoding="utf-8").strip().split("\n")
+        assert len(lines) >= 2  # 默认 fixture 有 2 条边
+        for line in lines:
+            line = line.strip()
+            assert line, f"空行: {line!r}"
+            obj = json.loads(line)  # 不抛异常即合法
+            assert isinstance(obj, dict)
+            assert {"edge_id", "source", "target", "script_id"} <= set(obj.keys())
+
+    def test_not_a_json_array(self):
+        """edges.jsonl 不是 JSON 数组（整体 json.loads 应失败）"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+        store.save_script(_make_result("jsonl2"))
+
+        raw = store.EDGES_FILE.read_text(encoding="utf-8")
+        # 整体不是 JSON 数组（不以 [ 开头）
+        assert not raw.lstrip().startswith("[")
+
+    def test_append_does_not_rewrite(self):
+        """save_script 追加边时不应清空已有边（增量追加语义）"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+        store.save_script(_make_result("app1"))  # 2 条边
+        store.save_script(_make_result("app2"))  # 又 2 条边
+        edges = _read_edges()
+        assert len(edges) == 4
+        assert {e["script_id"] for e in edges} == {"app1", "app2"}
+
+
+class TestScriptIdsIndex:
+    """script_ids 反向索引测试"""
+
+    def test_table_has_script_ids_after_save(self):
+        """保存脚本后，相关表的 script_ids 应包含该脚本 id"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+        store.save_script(_make_result("sidx1"))
+
+        tables = json.loads(store.TABLES_FILE.read_text())
+        assert "public.orders" in tables
+        sids = tables["public.orders"].get("script_ids", [])
+        assert "sidx1" in sids
+        assert tables["public.orders"]["script_count"] == len(sids)
+
+    def test_script_ids_accumulate_across_scripts(self):
+        """两个脚本引用同一表时，script_ids 应累积去重"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+
+        # 脚本1 涉及 public.orders
+        store.save_script(_make_result("sidx-a"))
+        # 脚本2 也涉及 public.orders（orders→report 单条边）
         store.save_script(_make_result(
-            "sp2",
+            "sidx-b",
             lineages=[
-                Lineage(lineage_id="l-sp", source_table="public.orders", target_table="public.report",
+                Lineage(lineage_id="lb", source_table="public.orders", target_table="public.report",
                         operation_type=OperationType.INSERT,
                         extraction_method=ExtractionMethod.STATIC_ANALYSIS,
-                        statement_seq=1, dml_statement="INSERT INTO public.report SELECT * FROM public.orders;"),
+                        statement_seq=1, dml_statement="INSERT INTO report SELECT * FROM orders;"),
             ],
             tables_db=[
-                TableInfo(table_name="public.orders", table_type=TableType.SOURCE, source="database"),
-                TableInfo(table_name="public.report", table_type=TableType.TARGET, source="database"),
+                TableInfo(schema_name="public", table_name="orders", table_type=TableType.SOURCE, source="database"),
+                TableInfo(schema_name="public", table_name="report", table_type=TableType.TARGET, source="database"),
             ],
             tables_script=[],
-            vis_nodes=[VisNode(id="orders", label="orders", type="source"),
-                       VisNode(id="report", label="report", type="target")],
-            vis_edges=[VisEdge(source="orders", target="report", label="INSERT", statement_seq=1)],
+            vis_nodes=[],
+            vis_edges=[],
             stmts=[Statement(seq=1, type=StatementType.INSERT,
-                             text="INSERT INTO public.report SELECT * FROM public.orders;",
-                             tables_referenced=["orders"], tables_modified=["report"])],
+                             text="INSERT INTO report SELECT * FROM orders;",
+                             tables_referenced=["public.orders"], tables_modified=["public.report"])],
         ))
 
         tables = json.loads(store.TABLES_FILE.read_text())
-        # 不应该出现 "public.orders" 和 "orders" 两个 key
-        assert "orders" in tables
-        assert "report" in tables
-        assert "public.orders" not in tables
-        assert "public.report" not in tables
+        sids = tables["public.orders"]["script_ids"]
+        assert set(sids) == {"sidx-a", "sidx-b"}
+        assert tables["public.orders"]["script_count"] == 2
 
-    def test_schema_prefix_edges_normalized(self):
-        """边的 source/target 应被归一化"""
+    def test_delete_removes_script_from_index(self):
+        """删除脚本后，相关表的 script_ids 应移除该 script_id"""
         store._write_json(store.TABLES_FILE, {})
-        store._write_json(store.EDGES_FILE, [])
+        store._write_edges([])
+        store.save_script(_make_result("del-idx1"))
+        store.save_script(_make_result(
+            "del-idx2",
+            lineages=[
+                Lineage(lineage_id="lx", source_table="public.orders", target_table="public.report",
+                        operation_type=OperationType.INSERT,
+                        extraction_method=ExtractionMethod.STATIC_ANALYSIS,
+                        statement_seq=1, dml_statement="INSERT INTO report SELECT * FROM orders;"),
+            ],
+            tables_db=[
+                TableInfo(schema_name="public", table_name="orders", table_type=TableType.SOURCE, source="database"),
+                TableInfo(schema_name="public", table_name="report", table_type=TableType.TARGET, source="database"),
+            ],
+            tables_script=[],
+            vis_nodes=[],
+            vis_edges=[],
+            stmts=[Statement(seq=1, type=StatementType.INSERT,
+                             text="INSERT INTO report SELECT * FROM orders;",
+                             tables_referenced=["public.orders"], tables_modified=["public.report"])],
+        ))
+
+        # 两个脚本都引用 public.orders
+        tables = json.loads(store.TABLES_FILE.read_text())
+        assert set(tables["public.orders"]["script_ids"]) == {"del-idx1", "del-idx2"}
+
+        # 删除 del-idx1：orders 的 script_ids 应只剩 del-idx2
+        store.delete_script("del-idx1")
+        tables = json.loads(store.TABLES_FILE.read_text())
+        assert tables["public.orders"]["script_ids"] == ["del-idx2"]
+        assert tables["public.orders"]["script_count"] == 1
+
+    def test_orphan_table_cleaned_when_script_ids_empty(self):
+        """当表的 script_ids 全部被移除时，该表应被删除（孤立表清理）"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+        store.save_script(_make_result("orph1"))
+
+        # tmp 只被 orph1 引用
+        tables = json.loads(store.TABLES_FILE.read_text())
+        assert tables["public.tmp"]["script_ids"] == ["orph1"]
+
+        store.delete_script("orph1")
+        tables = json.loads(store.TABLES_FILE.read_text())
+        # script_ids 变空 → 表被删
+        assert "public.tmp" not in tables
+
+
+class TestConcurrencySafety:
+    """并发写安全测试（文件锁保护）"""
+
+    def test_concurrent_saves_no_edge_loss(self):
+        """两个线程并发 save_script，所有边都不应丢失"""
+        import threading
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+
+        errors: list[Exception] = []
+
+        def worker(script_id: str):
+            try:
+                store.save_script(_make_result(script_id))
+            except Exception as e:
+                errors.append(e)
+
+        # 5 个线程并发保存，每个 2 条边 → 共 10 条
+        threads = [threading.Thread(target=worker, args=(f"conc{i}",)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"并发保存抛异常: {errors}"
+
+        edges = _read_edges()
+        # 没有锁的话，并发追加写可能交错损坏行或丢数据；有锁则 10 条齐全
+        assert len(edges) == 10, f"期望 10 条边，实际 {len(edges)}（可能并发写丢数据）"
+        script_ids = {e["script_id"] for e in edges}
+        assert script_ids == {f"conc{i}" for i in range(5)}
+
+    def test_concurrent_delete_and_save_isolated(self):
+        """并发删除一个脚本、保存另一个脚本，不应互相破坏数据完整性"""
+        import threading
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+        # 预置一个脚本
+        store.save_script(_make_result("pre"))
+
+        errors: list[Exception] = []
+
+        def deleter():
+            try:
+                store.delete_script("pre")
+            except Exception as e:
+                errors.append(e)
+
+        def saver():
+            try:
+                store.save_script(_make_result("new"))
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=deleter)
+        t2 = threading.Thread(target=saver)
+        t1.start(); t2.start()
+        t1.join(); t2.join()
+
+        assert errors == [], f"并发操作抛异常: {errors}"
+        # 'pre' 的边应全部移除，'new' 的边应保留
+        edges = _read_edges()
+        assert all(e["script_id"] != "pre" for e in edges)
+        assert any(e["script_id"] == "new" for e in edges)
+
+
+class TestQualifiedNameNormalization:
+    """全限定名归一化测试（schema 保留语义）"""
+
+    def test_qualified_names_kept_distinct(self):
+        """不同 schema 的表名在全局注册表中保持独立 key"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+
+        # 第一次: public.orders → public.report
+        store.save_script(_make_result("sp1"))
+        # 第二次: analytics.orders → analytics.report（同名不同 schema）
+        store.save_script(_make_result(
+            "sp2",
+            lineages=[
+                Lineage(lineage_id="l-sp", source_table="analytics.orders", target_table="analytics.report",
+                        operation_type=OperationType.INSERT,
+                        extraction_method=ExtractionMethod.STATIC_ANALYSIS,
+                        statement_seq=1, dml_statement="INSERT INTO analytics.report SELECT * FROM analytics.orders;"),
+            ],
+            tables_db=[
+                TableInfo(schema_name="analytics", table_name="orders", table_type=TableType.SOURCE, source="database"),
+                TableInfo(schema_name="analytics", table_name="report", table_type=TableType.TARGET, source="database"),
+            ],
+            tables_script=[],
+            vis_nodes=[VisNode(id="analytics.orders", label="orders", type="source"),
+                       VisNode(id="analytics.report", label="report", type="target")],
+            vis_edges=[VisEdge(source="analytics.orders", target="analytics.report", label="INSERT", statement_seq=1)],
+            stmts=[Statement(seq=1, type=StatementType.INSERT,
+                             text="INSERT INTO analytics.report SELECT * FROM analytics.orders;",
+                             tables_referenced=["analytics.orders"], tables_modified=["analytics.report"])],
+        ))
+
+        tables = json.loads(store.TABLES_FILE.read_text())
+        # public.orders 与 analytics.orders 是两个独立 key（不合并）
+        assert "public.orders" in tables
+        assert "analytics.orders" in tables
+        assert "public.report" in tables
+        assert "analytics.report" in tables
+
+    def test_plain_name_normalized_to_public(self):
+        """裸表名（不带 schema）应归一化为 public.xxx"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+
+        store.save_script(_make_result("plain1"))
+
+        tables = json.loads(store.TABLES_FILE.read_text())
+        # 不应出现裸表名，都应该是 public.xxx
+        assert "public.orders" in tables
+        assert "public.tmp" in tables
+        assert "public.report" in tables
+        # 不应出现不带 schema 的 key
+        assert "orders" not in tables
+        assert "tmp" not in tables
+        assert "report" not in tables
+
+    def test_schema_prefix_edges_kept(self):
+        """边的 source/target 应保留 schema 前缀"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
 
         store.save_script(_make_result(
             "sp3",
@@ -326,34 +566,33 @@ class TestSchemaPrefixNormalization:
                         statement_seq=1, dml_statement="INSERT INTO staging.cleaned SELECT * FROM analytics.raw_data;"),
             ],
             tables_db=[
-                TableInfo(table_name="analytics.raw_data", table_type=TableType.SOURCE, source="database"),
-                TableInfo(table_name="staging.cleaned", table_type=TableType.TARGET, source="database"),
+                TableInfo(schema_name="analytics", table_name="raw_data", table_type=TableType.SOURCE, source="database"),
+                TableInfo(schema_name="staging", table_name="cleaned", table_type=TableType.TARGET, source="database"),
             ],
             tables_script=[],
             vis_nodes=[],
             vis_edges=[],
             stmts=[Statement(seq=1, type=StatementType.INSERT,
                              text="INSERT INTO staging.cleaned SELECT * FROM analytics.raw_data;",
-                             tables_referenced=["raw_data"], tables_modified=["cleaned"])],
+                             tables_referenced=["analytics.raw_data"], tables_modified=["staging.cleaned"])],
         ))
 
-        edges = json.loads(store.EDGES_FILE.read_text())
+        edges = _read_edges()
         assert len(edges) == 1
-        assert edges[0]["source"] == "raw_data"
-        assert edges[0]["target"] == "cleaned"
+        assert edges[0]["source"] == "analytics.raw_data"
+        assert edges[0]["target"] == "staging.cleaned"
 
-    def test_cross_script_dedup_with_schema(self):
-        """跨脚本归一化: 一个脚本用 orders，另一个用 public.orders，应视为同一张表"""
+    def test_cross_schema_dedup_within_same_schema(self):
+        """同一 schema 下的表合并 script_count，跨 schema 的同名表独立"""
         store._write_json(store.TABLES_FILE, {})
-        store._write_json(store.EDGES_FILE, [])
+        store._write_edges([])
 
-        # 脚本1: orders → report
+        # 脚本1: public.orders → public.report
         store.save_script(_make_result("dedup1"))
         tables1 = json.loads(store.TABLES_FILE.read_text())
-        count_orders = sum(1 for k in tables1 if k == "orders")
-        assert count_orders == 1
+        assert "public.orders" in tables1
 
-        # 脚本2: public.orders → public.report（归一化后应合并）
+        # 脚本2: 同样引用 public.orders → public.report（应合并，script_count 增加）
         store.save_script(_make_result(
             "dedup2",
             lineages=[
@@ -363,25 +602,26 @@ class TestSchemaPrefixNormalization:
                         statement_seq=1, dml_statement="INSERT INTO public.report SELECT * FROM public.orders;"),
             ],
             tables_db=[
-                TableInfo(table_name="public.orders", table_type=TableType.SOURCE, source="database"),
-                TableInfo(table_name="public.report", table_type=TableType.TARGET, source="database"),
+                TableInfo(schema_name="public", table_name="orders", table_type=TableType.SOURCE, source="database"),
+                TableInfo(schema_name="public", table_name="report", table_type=TableType.TARGET, source="database"),
             ],
             tables_script=[],
             vis_nodes=[],
             vis_edges=[],
             stmts=[Statement(seq=1, type=StatementType.INSERT,
                              text="INSERT INTO report SELECT * FROM orders;",
-                             tables_referenced=["orders"], tables_modified=["report"])],
+                             tables_referenced=["public.orders"], tables_modified=["public.report"])],
         ))
         tables2 = json.loads(store.TABLES_FILE.read_text())
-        # orders 仍然只有一个 key（合并后 script_count 增加）
-        assert "orders" in tables2
-        assert "public.orders" not in tables2
+        # public.orders 仍然只有一个 key（同 schema 合并）
+        assert "public.orders" in tables2
+        # 不应出现裸 orders
+        assert "orders" not in tables2
 
-    def test_global_graph_normalized(self):
-        """全局图谱的节点应使用归一化名称"""
+    def test_global_graph_qualified(self):
+        """全局图谱的节点应使用全限定名"""
         store._write_json(store.TABLES_FILE, {})
-        store._write_json(store.EDGES_FILE, [])
+        store._write_edges([])
 
         store.save_script(_make_result(
             "gg-sp1",
@@ -392,23 +632,24 @@ class TestSchemaPrefixNormalization:
                         statement_seq=1, dml_statement="INSERT INTO dw.tgt SELECT * FROM public.src;"),
             ],
             tables_db=[
-                TableInfo(table_name="public.src", table_type=TableType.SOURCE, source="database"),
-                TableInfo(table_name="dw.tgt", table_type=TableType.TARGET, source="database"),
+                TableInfo(schema_name="public", table_name="src", table_type=TableType.SOURCE, source="database"),
+                TableInfo(schema_name="dw", table_name="tgt", table_type=TableType.TARGET, source="database"),
             ],
             tables_script=[],
             vis_nodes=[],
             vis_edges=[],
             stmts=[Statement(seq=1, type=StatementType.INSERT,
                              text="INSERT INTO tgt SELECT * FROM src;",
-                             tables_referenced=["src"], tables_modified=["tgt"])],
+                             tables_referenced=["public.src"], tables_modified=["dw.tgt"])],
         ))
 
         graph = store.get_global_graph()
         node_ids = {n.id for n in graph.nodes}
-        assert "src" in node_ids
-        assert "tgt" in node_ids
-        assert "public.src" not in node_ids
-        assert "dw.tgt" not in node_ids
+        assert "public.src" in node_ids
+        assert "dw.tgt" in node_ids
+        # 不应出现裸表名
+        assert "src" not in node_ids
+        assert "tgt" not in node_ids
         assert len(graph.edges) == 1
-        assert graph.edges[0].source == "src"
-        assert graph.edges[0].target == "tgt"
+        assert graph.edges[0].source == "public.src"
+        assert graph.edges[0].target == "dw.tgt"

@@ -98,9 +98,9 @@ async def correct_statement(script_id: str, seq: int, request: CorrectStatementR
     from ..services.analyzer import _build_visualization
     result.visualization = _build_visualization(lineages, table_type_map)
 
-    # 先删除旧边，再保存新结果
-    store._remove_edges_for_script(script_id)
-    store.save_script(result)
+    # 原子地替换该脚本的边（删旧边 + 保存新结果 + 加新边，全程持锁）
+    # 注意：不能分开调 _remove_edges_for_script + save_script，中间无锁会丢数据
+    store.replace_script_edges(result)
 
     return result
 

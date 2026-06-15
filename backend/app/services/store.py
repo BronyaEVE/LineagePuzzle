@@ -1,31 +1,56 @@
-"""JSON 文件持久化存储层。
+"""JSON 文件持久化存储层（带文件锁）。
 
 三层存储结构：
-  - 全局表注册表 (tables.json)
-  - 全局血缘边 (edges.json)
+  - 全局表注册表 (tables.json)：每个表带 `script_ids` 反向索引
+  - 全局血缘边 (edges.jsonl)：JSON Lines 格式，支持追加写
   - 单个脚本 (scripts/{id}.json)
+
+所有写操作在 `store.lock` 文件锁保护下进行，避免并发写丢失数据。
+edges 采用 JSONL 追加写，save_script 时不再全量重写；删除脚本时才重写。
+孤立表清理基于 `script_ids` 反向索引，O(受影响表数) 而非 O(边数)。
 """
 from __future__ import annotations
 
 import json
 import os
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+
+from filelock import FileLock
 
 from ..models.analysis import AnalysisResult, GlobalEdge, GlobalGraph, ScriptSummary, VisNode
 from .normalize import normalize_table_name
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 TABLES_FILE = DATA_DIR / "tables.json"
-EDGES_FILE = DATA_DIR / "edges.json"
+EDGES_FILE = DATA_DIR / "edges.jsonl"  # JSON Lines 格式
 SCRIPTS_DIR = DATA_DIR / "scripts"
+LOCK_FILE = DATA_DIR / "store.lock"
 
 
 def _ensure_dirs():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
+
+@contextmanager
+def _store_lock():
+    """获取 store.lock 文件锁，保护写操作的原子性。
+
+    所有对 tables.json / edges.jsonl / scripts/ 的写操作必须在此锁内。
+    读操作不加锁——读时可能看到中间态，但单次 IO 是原子的，对本项目规模可接受。
+    """
+    _ensure_dirs()
+    lock = FileLock(str(LOCK_FILE), timeout=30)
+    with lock:
+        yield
+
+
+# ============================================================
+# 基础 IO 工具
+# ============================================================
 
 def _read_json(path: Path, default=None):
     if not path.exists():
@@ -40,27 +65,66 @@ def _write_json(path: Path, data):
         json.dump(data, f, ensure_ascii=False, indent=2, default=str)
 
 
+def _read_edges() -> list[dict]:
+    """读取 edges.jsonl（JSON Lines 格式），每行一个 JSON 对象。
+
+    文件不存在或空文件返回空列表。
+    """
+    if not EDGES_FILE.exists():
+        return []
+    edges: list[dict] = []
+    with open(EDGES_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                edges.append(json.loads(line))
+            except json.JSONDecodeError:
+                # 跳过损坏行（追加写中断的半行）
+                continue
+    return edges
+
+
+def _write_edges(edges: list[dict]):
+    """全量重写 edges.jsonl（仅删除脚本时用）。"""
+    _ensure_dirs()
+    with open(EDGES_FILE, "w", encoding="utf-8") as f:
+        for edge in edges:
+            f.write(json.dumps(edge, ensure_ascii=False) + "\n")
+
+
+def _append_edge(edge: dict):
+    """单条边追加到 edges.jsonl 尾部（O(1)，save_script 路径用）。"""
+    _ensure_dirs()
+    with open(EDGES_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(edge, ensure_ascii=False) + "\n")
+
+
 # ============================================================
-# 脚本管理
+# 脚本管理（所有写操作均在 _store_lock 保护下）
 # ============================================================
 
 def save_script(result: AnalysisResult) -> AnalysisResult:
-    """保存脚本分析结果，同时更新全局表注册表和边。"""
-    _ensure_dirs()
+    """保存脚本分析结果，同时更新全局表注册表和边。
 
-    # 自动命名
-    if not result.name:
-        result.name = f"脚本_{result.created_at.strftime('%m%d_%H%M')}"
+    整个操作在文件锁内完成，保证 tables.json / edges.jsonl / scripts/*.json
+    三处的更新是原子的（不会被其他并发写穿插）。
+    """
+    with _store_lock():
+        # 自动命名
+        if not result.name:
+            result.name = f"脚本_{result.created_at.strftime('%m%d_%H%M')}"
 
-    # 保存单个脚本文件
-    script_path = SCRIPTS_DIR / f"{result.analysis_id}.json"
-    _write_json(script_path, result.model_dump())
+        # 保存单个脚本文件
+        script_path = SCRIPTS_DIR / f"{result.analysis_id}.json"
+        _write_json(script_path, result.model_dump())
 
-    # 更新全局表
-    _merge_tables(result)
+        # 更新全局表（带 script_ids 反向索引）
+        _merge_tables(result)
 
-    # 更新全局边
-    _merge_edges(result)
+        # 追加边到 edges.jsonl（O(1) 追加，不读不重写）
+        _append_edges_for_script(result)
 
     return result
 
@@ -102,43 +166,82 @@ def get_script(script_id: str) -> AnalysisResult | None:
 
 
 def delete_script(script_id: str) -> bool:
-    """删除脚本及其关联的全局边，清理孤立表。"""
-    path = SCRIPTS_DIR / f"{script_id}.json"
-    if not path.exists():
-        return False
+    """删除脚本及其关联的全局边，清理孤立表。
 
-    # 删除脚本文件
-    path.unlink()
+    流程（全程持锁）:
+      1. 删除脚本文件
+      2. 收集该脚本所有边涉及的表（受影响表集合）
+      3. 重写 edges.jsonl，移除该脚本的边
+      4. 从受影响表的 script_ids 中移除该 script_id；script_ids 变空的表删除
+    """
+    with _store_lock():
+        path = SCRIPTS_DIR / f"{script_id}.json"
+        if not path.exists():
+            return False
 
-    # 删除关联的全局边
-    _remove_edges_for_script(script_id)
+        # 先收集该脚本的边涉及的表（在删边之前，避免重复扫描）
+        affected_tables = _collect_affected_tables(script_id)
 
-    # 清理孤立表
-    _cleanup_orphan_tables()
+        # 删除脚本文件
+        path.unlink()
+
+        # 删除关联边（重写 edges.jsonl）
+        _remove_edges_for_script(script_id)
+
+        # 从受影响表的 script_ids 移除该 script_id，清理孤立表
+        _remove_script_from_tables(script_id, affected_tables)
 
     return True
 
 
 def update_script_name(script_id: str, name: str) -> AnalysisResult | None:
-    """重命名脚本。"""
-    result = get_script(script_id)
-    if not result:
-        return None
-    result.name = name
-    result.updated_at = datetime.now()
-    script_path = SCRIPTS_DIR / f"{script_id}.json"
-    _write_json(script_path, result.model_dump())
+    """重命名脚本（只改 scripts/{id}.json，不影响全局表/边）。"""
+    with _store_lock():
+        result = get_script(script_id)
+        if not result:
+            return None
+        result.name = name
+        result.updated_at = datetime.now()
+        script_path = SCRIPTS_DIR / f"{script_id}.json"
+        _write_json(script_path, result.model_dump())
+    return result
+
+
+def replace_script_edges(result: AnalysisResult) -> AnalysisResult:
+    """原子地替换某个脚本的边（用于修正语句后重建血缘）。
+
+    在同一把锁下完成"删旧边 + 保存新脚本 + 加新边 + 更新表 script_ids"，
+    避免 API 层分两次调用 store 导致中间无锁丢数据。
+
+    与 save_script 的区别：先移除该 analysis_id 的旧边和旧 script_ids 引用，
+    再保存新结果。
+    """
+    script_id = result.analysis_id
+    with _store_lock():
+        # 1. 收集旧边涉及的表
+        affected_tables = _collect_affected_tables(script_id)
+        # 2. 删旧边
+        _remove_edges_for_script(script_id)
+        # 3. 从受影响表的 script_ids 移除旧引用
+        _remove_script_from_tables(script_id, affected_tables)
+        # 4. 保存新脚本 + 追加新边 + 合并新表
+        if not result.name:
+            result.name = f"脚本_{result.created_at.strftime('%m%d_%H%M')}"
+        script_path = SCRIPTS_DIR / f"{script_id}.json"
+        _write_json(script_path, result.model_dump())
+        _merge_tables(result)
+        _append_edges_for_script(result)
     return result
 
 
 # ============================================================
-# 全局图谱
+# 全局图谱（读操作，不加锁）
 # ============================================================
 
 def get_global_graph() -> GlobalGraph:
     """返回累积的全局血缘图谱。"""
     tables = _read_json(TABLES_FILE, {})
-    edges = _read_json(EDGES_FILE, [])
+    edges = _read_edges()
 
     # 根据边判断节点角色
     sources = {e["source"] for e in edges}
@@ -172,59 +275,75 @@ def get_tables() -> dict:
 # ============================================================
 
 def _merge_tables(result: AnalysisResult):
-    """合并脚本的表信息到全局注册表。"""
+    """合并脚本的表信息到全局注册表（带 script_ids 反向索引）。
+
+    必须在 _store_lock 内调用。
+    """
     tables = _read_json(TABLES_FILE, {})
     now = datetime.now().isoformat()
+    script_id = result.analysis_id
 
-    all_table_infos = list(result.database_info.tables_from_db) + list(result.database_info.tables_from_script)
-    for ti in all_table_infos:
-        name = normalize_table_name(ti.table_name)
+    def _touch(name: str, schema: str, *, columns: list | None = None,
+               source: str = "database", table_type: str | None = None):
+        """登记或更新一个表，把 script_id 追加到 script_ids（去重）。"""
+        if not name:
+            return
         if name in tables:
-            tables[name]["script_count"] = tables[name].get("script_count", 0) + 1
-            tables[name]["last_seen"] = now
+            rec = tables[name]
+            rec["last_seen"] = now
+            # 合并 script_ids（去重）
+            sids = rec.setdefault("script_ids", [])
+            if script_id not in sids:
+                sids.append(script_id)
+            rec["script_count"] = len(sids)
             # 合并列信息（如果之前为空）
-            if not tables[name].get("columns") and ti.columns:
-                tables[name]["columns"] = [{"name": c.name, "type": c.type} for c in ti.columns]
+            if not rec.get("columns") and columns:
+                rec["columns"] = [{"name": c.name, "type": c.type} for c in columns]
         else:
             tables[name] = {
-                "schema": ti.schema_name,
+                "schema": schema,
                 "name": name,
-                "type": ti.table_type.value if hasattr(ti.table_type, "value") else str(ti.table_type),
-                "columns": [{"name": c.name, "type": c.type} for c in ti.columns],
-                "source": ti.source,
+                "type": table_type or "source",  # 会被全局图逻辑重新判定
+                "columns": [{"name": c.name, "type": c.type} for c in (columns or [])],
+                "source": source,
                 "first_seen": now,
+                "script_ids": [script_id],
                 "script_count": 1,
                 "last_seen": now,
             }
 
+    # 从 database_info 合并
+    all_table_infos = list(result.database_info.tables_from_db) + list(result.database_info.tables_from_script)
+    for ti in all_table_infos:
+        name = normalize_table_name(ti.table_name)
+        _touch(
+            name,
+            ti.schema_name,
+            columns=ti.columns,
+            source=ti.source,
+            table_type=ti.table_type.value if hasattr(ti.table_type, "value") else str(ti.table_type),
+        )
+
     # 也从 lineages 中收集表（确保不遗漏）
     for lin in result.lineages:
         for tname in [lin.source_table, lin.target_table]:
-            tname = normalize_table_name(tname)
-            if tname and tname not in tables:
-                tables[tname] = {
-                    "schema": "public",
-                    "name": tname,
-                    "type": "source",  # 会被全局图逻辑重新判定
-                    "columns": [],
-                    "source": "lineage",
-                    "first_seen": now,
-                    "script_count": 1,
-                    "last_seen": now,
-                }
+            normalized = normalize_table_name(tname)
+            if normalized:
+                _touch(normalized, "public", source="lineage")
 
     _write_json(TABLES_FILE, tables)
 
 
-def _merge_edges(result: AnalysisResult):
-    """添加脚本的血缘边到全局边列表。"""
-    edges = _read_json(EDGES_FILE, [])
-    now = datetime.now().isoformat()
+def _append_edges_for_script(result: AnalysisResult):
+    """把脚本产生的血缘边逐条追加到 edges.jsonl（O(1) 追加，不重写）。
 
+    必须在 _store_lock 内调用。
+    """
+    now = datetime.now().isoformat()
     for lin in result.lineages:
         if not lin.source_table:
             continue
-        edges.append({
+        _append_edge({
             "edge_id": str(uuid.uuid4()),
             "source": normalize_table_name(lin.source_table),
             "target": normalize_table_name(lin.target_table),
@@ -234,29 +353,55 @@ def _merge_edges(result: AnalysisResult):
             "created_at": now,
         })
 
-    _write_json(EDGES_FILE, edges)
+
+def _collect_affected_tables(script_id: str) -> set[str]:
+    """收集某脚本所有边涉及的表（source + target），用于精准清理。
+
+    必须在 _store_lock 内、删边之前调用。
+    """
+    affected: set[str] = set()
+    for e in _read_edges():
+        if e.get("script_id") == script_id:
+            affected.add(e.get("source"))
+            affected.add(e.get("target"))
+    affected.discard(None)
+    affected.discard("")
+    return affected
 
 
 def _remove_edges_for_script(script_id: str):
-    """删除指定脚本关联的所有全局边。"""
-    edges = _read_json(EDGES_FILE, [])
+    """删除指定脚本关联的所有全局边（全量重写 edges.jsonl）。
+
+    必须在 _store_lock 内调用。删除是低频操作，重写可接受。
+    """
+    edges = _read_edges()
     edges = [e for e in edges if e.get("script_id") != script_id]
-    _write_json(EDGES_FILE, edges)
+    _write_edges(edges)
 
 
-def _cleanup_orphan_tables():
-    """清理不再被任何边引用的孤立表。"""
+def _remove_script_from_tables(script_id: str, affected_tables: set[str]):
+    """从受影响表的 script_ids 中移除 script_id，script_ids 变空的表删除。
+
+    基于 script_ids 反向索引，O(受影响表数) 而非 O(边数)。
+    必须在 _store_lock 内调用。
+    """
+    if not affected_tables:
+        return
     tables = _read_json(TABLES_FILE, {})
-    edges = _read_json(EDGES_FILE, [])
-
-    referenced = set()
-    for e in edges:
-        referenced.add(e.get("source"))
-        referenced.add(e.get("target"))
-
-    orphans = [name for name in tables if name not in referenced]
-    for name in orphans:
-        del tables[name]
-
-    if orphans:
+    changed = False
+    for name in list(tables.keys()):
+        if name not in affected_tables:
+            continue
+        rec = tables[name]
+        sids = rec.get("script_ids", [])
+        if script_id in sids:
+            sids = [s for s in sids if s != script_id]
+            rec["script_ids"] = sids
+            rec["script_count"] = len(sids)
+            changed = True
+        # script_ids 为空 → 该表不再被任何脚本引用 → 删除（孤立表清理）
+        if not sids:
+            del tables[name]
+            changed = True
+    if changed:
         _write_json(TABLES_FILE, tables)
