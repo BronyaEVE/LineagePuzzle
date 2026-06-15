@@ -15,11 +15,32 @@ from ..models.statement import Statement, StatementType
 from .normalize import normalize_table_name
 
 
+def _qualified_name_from_table(table_expr: sqlglot.exp.Table) -> str:
+    """从 sqlglot Table 节点重建全限定名。
+
+    sqlglot 的 `table.name` 只返回纯表名（不含 schema），schema 信息存在 `table.db`。
+    这里优先用 `db + '.' + name` 重建，db 为空时裸表名补默认 schema `public`，
+    最后经 normalize_table_name 统一规范化。
+
+    例:
+      Table(db="public", name="orders") → "public.orders"
+      Table(db="", name="orders")       → "public.orders"
+      Table(db="reporting", name="orders") → "reporting.orders"
+    """
+    table_name = table_expr.name
+    schema = table_expr.db
+    if schema:
+        raw = f"{schema}.{table_name}"
+    else:
+        raw = table_name
+    return normalize_table_name(raw)
+
+
 def _extract_tables_via_ast(stmt_text: str) -> tuple[list[str], list[str], list[str]]:
     """使用 sqlglot 静态解析 SQL AST，提取表名。
 
     返回 (referenced_tables, created_tables, modified_tables)
-    所有表名经过归一化处理（去除 schema/catalog 前缀）。
+    所有表名经过归一化处理（规范化为 `schema.table` 全限定名，裸表名补 public）。
     """
     referenced: list[str] = []
     created: list[str] = []
@@ -30,11 +51,9 @@ def _extract_tables_via_ast(stmt_text: str) -> tuple[list[str], list[str], list[
     except Exception:
         return referenced, created, modified
 
-    # 提取所有引用的表（归一化表名）
+    # 提取所有引用的表（规范化为全限定名，保留 schema 区分同名表）
     for table in parsed.find_all(sqlglot.exp.Table):
-        # sqlglot 的 table.name 只返回表名部分，不含 schema/catalog
-        # 但为安全起见仍然做归一化
-        name = normalize_table_name(table.name)
+        name = _qualified_name_from_table(table)
         if name and name not in referenced:
             referenced.append(name)
 
@@ -42,7 +61,7 @@ def _extract_tables_via_ast(stmt_text: str) -> tuple[list[str], list[str], list[
     if isinstance(parsed, sqlglot.exp.Create):
         table_expr = parsed.find(sqlglot.exp.Table)
         if table_expr:
-            name = normalize_table_name(table_expr.name)
+            name = _qualified_name_from_table(table_expr)
             if name in referenced:
                 referenced.remove(name)
             if name not in created:
@@ -50,7 +69,7 @@ def _extract_tables_via_ast(stmt_text: str) -> tuple[list[str], list[str], list[
     elif isinstance(parsed, sqlglot.exp.Insert):
         table_expr = parsed.find(sqlglot.exp.Table)
         if table_expr:
-            name = normalize_table_name(table_expr.name)
+            name = _qualified_name_from_table(table_expr)
             if name in referenced:
                 referenced.remove(name)
             if name not in modified:
@@ -58,7 +77,7 @@ def _extract_tables_via_ast(stmt_text: str) -> tuple[list[str], list[str], list[
     elif isinstance(parsed, sqlglot.exp.Update):
         table_expr = parsed.find(sqlglot.exp.Table)
         if table_expr:
-            name = normalize_table_name(table_expr.name)
+            name = _qualified_name_from_table(table_expr)
             if name in referenced:
                 referenced.remove(name)
             if name not in modified:
@@ -66,7 +85,7 @@ def _extract_tables_via_ast(stmt_text: str) -> tuple[list[str], list[str], list[
     elif isinstance(parsed, sqlglot.exp.Delete):
         table_expr = parsed.find(sqlglot.exp.Table)
         if table_expr:
-            name = normalize_table_name(table_expr.name)
+            name = _qualified_name_from_table(table_expr)
             if name in referenced:
                 referenced.remove(name)
             if name not in modified:

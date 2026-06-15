@@ -118,15 +118,24 @@ class DBConnector:
         plan = plan_data.get("Plan", plan_data)
 
         # 提取表名
+        # PostgreSQL 执行计划中，schema 信息在单独的 "Schema" 字段，
+        # Relation Name / Alias 只有纯表名。这里拼接成全限定名后再归一化。
         node_type = plan.get("Node Type", "")
         relation_name = plan.get("Relation Name")
+        relation_schema = plan.get("Schema")
         # 某些节点用 Alias
         alias = plan.get("Alias")
 
         if relation_name:
-            table = normalize_table_name(relation_name)
+            if relation_schema:
+                table = normalize_table_name(f"{relation_schema}.{relation_name}")
+            else:
+                table = normalize_table_name(relation_name)
         elif alias and node_type in ("Seq Scan", "Index Scan", "Index Only Scan", "Bitmap Heap Scan"):
-            table = normalize_table_name(alias)
+            if relation_schema:
+                table = normalize_table_name(f"{relation_schema}.{alias}")
+            else:
+                table = normalize_table_name(alias)
         else:
             table = None
 

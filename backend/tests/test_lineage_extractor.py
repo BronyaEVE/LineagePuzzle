@@ -1,4 +1,8 @@
-"""血缘提取模块测试"""
+"""血缘提取模块测试
+
+新语义：所有表名规范化为 `schema.table` 全限定名，裸表名补 public。
+跨 schema 同名表（public.orders vs reporting.orders）视为不同节点。
+"""
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -20,44 +24,44 @@ class TestExtractTablesViaAst:
         ref, created, modified = _extract_tables_via_ast(
             "INSERT INTO target_table SELECT * FROM source_table;"
         )
-        assert "source_table" in ref
-        assert "target_table" in modified
+        assert "public.source_table" in ref
+        assert "public.target_table" in modified
 
     def test_insert_with_join(self):
         ref, created, modified = _extract_tables_via_ast(
             "INSERT INTO summary (id, name, total) SELECT u.id, u.name, SUM(o.amount) FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.id, u.name;"
         )
-        assert "users" in ref
-        assert "orders" in ref
-        assert "summary" in modified
+        assert "public.users" in ref
+        assert "public.orders" in ref
+        assert "public.summary" in modified
 
     def test_update_with_subquery(self):
         ref, created, modified = _extract_tables_via_ast(
             "UPDATE table_c SET col1 = (SELECT col1 FROM table_d);"
         )
-        assert "table_d" in ref
-        assert "table_c" in modified
+        assert "public.table_d" in ref
+        assert "public.table_c" in modified
 
     def test_create_table_as_select(self):
         ref, created, modified = _extract_tables_via_ast(
             "CREATE TABLE tmp_orders AS SELECT order_id, amount FROM orders;"
         )
-        assert "orders" in ref
-        assert "tmp_orders" in created
+        assert "public.orders" in ref
+        assert "public.tmp_orders" in created
 
     def test_create_temp_table_as_select(self):
         ref, created, modified = _extract_tables_via_ast(
             "CREATE TEMP TABLE tmp AS SELECT * FROM src;"
         )
-        assert "src" in ref
-        assert "tmp" in created
+        assert "public.src" in ref
+        assert "public.tmp" in created
 
     def test_delete(self):
         ref, created, modified = _extract_tables_via_ast(
             "DELETE FROM target_table WHERE id IN (SELECT id FROM source_table);"
         )
-        assert "source_table" in ref
-        assert "target_table" in modified
+        assert "public.source_table" in ref
+        assert "public.target_table" in modified
 
 
 class TestExtractLineagesStatic:
@@ -68,8 +72,8 @@ class TestExtractLineagesStatic:
         lineages, type_map = extract_lineages(stmts)
 
         assert len(lineages) == 1
-        assert lineages[0].source_table == "source"
-        assert lineages[0].target_table == "target"
+        assert lineages[0].source_table == "public.source"
+        assert lineages[0].target_table == "public.target"
         assert lineages[0].operation_type == OperationType.INSERT
         assert lineages[0].extraction_method == ExtractionMethod.STATIC_ANALYSIS
         assert lineages[0].statement_seq == 1
@@ -86,9 +90,9 @@ class TestExtractLineagesStatic:
 
         assert len(lineages) == 2
         sources = {l.source_table for l in lineages}
-        assert "users" in sources
-        assert "orders" in sources
-        assert all(l.target_table == "summary" for l in lineages)
+        assert "public.users" in sources
+        assert "public.orders" in sources
+        assert all(l.target_table == "public.summary" for l in lineages)
 
     def test_temp_table_flow(self):
         """测试用例4: 包含临时表的完整血缘链路"""
@@ -110,15 +114,15 @@ class TestExtractLineagesStatic:
         seq1_lineages = [l for l in lineages if l.statement_seq == 1]
         seq1_sources = {l.source_table for l in seq1_lineages}
         seq1_targets = {l.target_table for l in seq1_lineages}
-        assert "orders" in seq1_sources
-        assert "customers" in seq1_sources
-        assert "tmp_order_detail" in seq1_targets
+        assert "public.orders" in seq1_sources
+        assert "public.customers" in seq1_sources
+        assert "public.tmp_order_detail" in seq1_targets
 
         # 第二条语句：tmp_order_detail → order_report
         seq2_lineages = [l for l in lineages if l.statement_seq == 2]
         assert len(seq2_lineages) == 1
-        assert seq2_lineages[0].source_table == "tmp_order_detail"
-        assert seq2_lineages[0].target_table == "order_report"
+        assert seq2_lineages[0].source_table == "public.tmp_order_detail"
+        assert seq2_lineages[0].target_table == "public.order_report"
 
     def test_multi_statement_script(self):
         """测试用例2: 多语句脚本"""
@@ -131,13 +135,13 @@ class TestExtractLineagesStatic:
         assert len(lineages) == 2
 
         lin1 = [l for l in lineages if l.statement_seq == 1][0]
-        assert lin1.source_table == "table_b"
-        assert lin1.target_table == "table_a"
+        assert lin1.source_table == "public.table_b"
+        assert lin1.target_table == "public.table_a"
         assert lin1.operation_type == OperationType.INSERT
 
         lin2 = [l for l in lineages if l.statement_seq == 2][0]
-        assert lin2.source_table == "table_d"
-        assert lin2.target_table == "table_c"
+        assert lin2.source_table == "public.table_d"
+        assert lin2.target_table == "public.table_c"
         assert lin2.operation_type == OperationType.UPDATE
 
     def test_table_type_classification(self):
@@ -148,17 +152,17 @@ class TestExtractLineagesStatic:
         ]
         _, type_map = extract_lineages(stmts)
 
-        assert type_map["src"] == TableType.SOURCE
-        assert type_map["tmp"] == TableType.INTERMEDIATE
-        assert type_map["tgt"] == TableType.TARGET
+        assert type_map["public.src"] == TableType.SOURCE
+        assert type_map["public.tmp"] == TableType.INTERMEDIATE
+        assert type_map["public.tgt"] == TableType.TARGET
 
     def test_statement_tables_populated(self):
         """验证语句的表引用信息被正确填充"""
         stmts = [_make_stmt(1, StatementType.INSERT, "INSERT INTO target SELECT * FROM source;")]
         extract_lineages(stmts)
 
-        assert "source" in stmts[0].tables_referenced
-        assert "target" in stmts[0].tables_modified
+        assert "public.source" in stmts[0].tables_referenced
+        assert "public.target" in stmts[0].tables_modified
 
 
 class TestExtractLineagesWithPlan:
@@ -221,66 +225,66 @@ class TestEdgeCases:
         lineages, _ = extract_lineages(stmts)
         # 应记录目标表，source 为空
         assert len(lineages) == 1
-        assert lineages[0].target_table == "target"
+        assert lineages[0].target_table == "public.target"
         assert lineages[0].source_table == ""
 
 
 class TestSchemaPrefixedTables:
-    """带 schema/catalog 前缀的表名处理测试"""
+    """带 schema 前缀的表名处理测试（全限定名语义）"""
 
     def test_insert_with_schema_prefix(self):
-        """INSERT 中源表带 schema 前缀"""
+        """INSERT 中源表带 schema 前缀 → 保留为 public.source_table"""
         ref, created, modified = _extract_tables_via_ast(
             "INSERT INTO target_table SELECT * FROM public.source_table;"
         )
-        assert "source_table" in ref
-        assert "target_table" in modified
+        assert "public.source_table" in ref
+        assert "public.target_table" in modified
 
     def test_insert_both_with_schema(self):
         """INSERT 源表和目标表都带 schema 前缀"""
         ref, created, modified = _extract_tables_via_ast(
             "INSERT INTO public.target_table SELECT * FROM public.source_table;"
         )
-        assert "source_table" in ref
-        assert "target_table" in modified
+        assert "public.source_table" in ref
+        assert "public.target_table" in modified
 
     def test_join_with_schema_prefix(self):
-        """JOIN 中多个表带不同 schema 前缀"""
+        """JOIN 中不同 schema 的表必须保留为独立节点（跨 schema 区分）"""
         ref, _, _ = _extract_tables_via_ast(
             "INSERT INTO report SELECT * FROM public.orders o JOIN analytics.customers c ON o.cid = c.id;"
         )
-        assert "orders" in ref
-        assert "customers" in ref
+        assert "public.orders" in ref
+        assert "analytics.customers" in ref
 
     def test_create_with_schema_prefix(self):
-        """CREATE TABLE 带.schema 前缀"""
+        """CREATE TABLE 带 schema 前缀"""
         ref, created, modified = _extract_tables_via_ast(
             "CREATE TABLE public.tmp_orders AS SELECT * FROM source;"
         )
-        assert "source" in ref
-        assert "tmp_orders" in created
+        assert "public.source" in ref
+        assert "public.tmp_orders" in created
 
-    def test_schema_prefix_no_duplicates(self):
-        """同一张表有/无 schema 前缀不应产生重复"""
+    def test_schema_prefix_distinct_from_plain(self):
+        """裸表名 src 与 public.src 应归一化为同一全限定名 public.src（不产生重复）"""
         ref, _, _ = _extract_tables_via_ast(
             "INSERT INTO t SELECT a.x FROM public.src a JOIN src b ON a.id = b.id;"
         )
-        # "src" 和 "public.src" 应归一化为同一个名称
-        assert ref.count("src") == 1
+        # 裸表名 src 补 public 后与 public.src 相同 → 去重后只剩一个
+        assert ref.count("public.src") == 1
 
-    def test_schema_lineage_normalized(self):
-        """血缘关系中的表名应被归一化"""
+    def test_schema_lineage_qualified(self):
+        """血缘关系中的表名应为全限定名"""
         stmts = [
             _make_stmt(1, StatementType.INSERT,
                        "INSERT INTO public.report SELECT * FROM public.orders;")
         ]
         lineages, type_map = extract_lineages(stmts)
         assert len(lineages) == 1
-        assert lineages[0].source_table == "orders"
-        assert lineages[0].target_table == "report"
+        assert lineages[0].source_table == "public.orders"
+        assert lineages[0].target_table == "public.report"
 
     def test_cross_schema_lineage(self):
-        """跨 schema 的血缘链路"""
+        """跨 schema 的血缘链路：不同 schema 的表保留各自 schema"""
         stmts = [
             _make_stmt(1, StatementType.CREATE,
                        "CREATE TEMP TABLE tmp AS SELECT * FROM staging.raw_data;"),
@@ -289,7 +293,17 @@ class TestSchemaPrefixedTables:
         ]
         lineages, type_map = extract_lineages(stmts)
         assert len(lineages) == 2
-        # staging.raw_data → tmp → report
-        src_lin = [l for l in lineages if l.source_table == "raw_data"][0]
-        assert src_lin.target_table == "tmp"
+        # staging.raw_data → public.tmp → public.report
+        src_lin = [l for l in lineages if l.source_table == "staging.raw_data"][0]
+        assert src_lin.target_table == "public.tmp"
 
+    def test_cross_schema_same_name_distinct(self):
+        """跨 schema 同名表必须区分（新设计核心价值）"""
+        ref, _, _ = _extract_tables_via_ast(
+            "INSERT INTO target SELECT * FROM public.orders o JOIN reporting.orders r ON o.id = r.id;"
+        )
+        # public.orders 与 reporting.orders 是两个独立节点
+        assert "public.orders" in ref
+        assert "reporting.orders" in ref
+        assert ref.count("public.orders") == 1
+        assert ref.count("reporting.orders") == 1

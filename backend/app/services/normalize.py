@@ -1,24 +1,31 @@
 """表名归一化工具。
 
-处理 schema/database 前缀，确保 "public.orders"、"mydb.public.orders" 和 "orders"
-在全局注册表中被视为同一张表。
+将表名规范化为 `schema.table` 全限定名形式，作为全局注册表的唯一主键。
+裸表名（不带 schema 前缀）一律视为 public schema。
+
+规则:
+  - "orders"              → "public.orders"   （裸表名补 public）
+  - "public.orders"       → "public.orders"
+  - "mydb.public.orders"  → "public.orders"   （catalog 去掉，保留 schema.table）
+  - "reporting.fact_sales"→ "reporting.fact_sales"（保留非 public schema）
+  - '"Orders"'            → "public.Orders"   （保留大小写）
+  - '"public"."Orders"'   → "public.Orders"
+  - "a.b.c.d.target"      → "d.target"        （长链取最后两段作 schema.table）
+  - ""                    → ""
+
+这样设计是为了区分 public.orders 与 reporting.orders 等跨 schema 同名表，
+避免在全局注册表中互相覆盖。
 """
 from __future__ import annotations
 
-import re
+DEFAULT_SCHEMA = "public"
 
 
 def normalize_table_name(name: str) -> str:
-    """将表名归一化为不含 schema/catalog 前缀的纯表名。
+    """将表名归一化为 `schema.table` 全限定名形式。
 
-    规则:
-      - "orders"              → "orders"
-      - "public.orders"       → "orders"
-      - "mydb.public.orders"  → "orders"
-      - '"Public"."Orders"'   → "Orders"   （带引号的标识符，保留大小写）
-      -空字符串               → ""
-
-    始终返回最后一部分（即实际的表名），并去除引号。
+    裸表名（不含 schema 前缀）补默认 schema `public`。
+    带完整前缀的取最后两段（schema.table），catalog/database 前缀被丢弃。
     """
     if not name:
         return ""
@@ -26,17 +33,22 @@ def normalize_table_name(name: str) -> str:
     # 去除首尾空白
     name = name.strip()
 
-    # 按点号拆分（处理 catalog.schema.table 格式）
-    # 需要处理引号内的点号，如 "my.schema".table
+    # 按点号拆分（正确处理引号内的点号）
     parts = _split_identifier(name)
 
-    # 取最后一部分作为表名
-    table_part = parts[-1] if parts else name
+    # 去除每段的引号
+    parts = [_unquote(p) for p in parts if _unquote(p)]
 
-    # 去除引号
-    table_part = _unquote(table_part)
+    if not parts:
+        return ""
 
-    return table_part
+    # 取最后两段作为 schema.table
+    if len(parts) >= 2:
+        schema, table = parts[-2], parts[-1]
+    else:
+        schema, table = DEFAULT_SCHEMA, parts[-1]
+
+    return f"{schema}.{table}"
 
 
 def _split_identifier(name: str) -> list[str]:
