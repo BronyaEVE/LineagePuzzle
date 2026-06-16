@@ -58,8 +58,18 @@ function App() {
   const handleAnalyze = async () => {
     setLoading(true);
     try {
-      await submitAnalysis({ script, database_config: dbConfig });
-      message.success("分析完成");
+      // 库名为空 → 离线模式（纯 AST 分析，不连数据库）
+      // 库名是连库的最小必要条件（host 有默认 localhost，但库名必须用户指定）
+      const hasDbConfig = Boolean(dbConfig.database?.trim());
+      const result = await submitAnalysis({
+        script,
+        database_config: hasDbConfig ? dbConfig : null,
+      });
+      message.success(
+        result.extraction_mode === "ast_only"
+          ? "分析完成（离线模式）"
+          : "分析完成（已连接数据库校验）"
+      );
       setScript("");
       setModalOpen(false);
       await refreshAll();

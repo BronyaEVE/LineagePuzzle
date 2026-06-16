@@ -1,6 +1,6 @@
 import React from "react";
 import MonacoEditor from "@monaco-editor/react";
-import { Button, Card, Space, Spin } from "antd";
+import { Button, Card, Space } from "antd";
 
 interface Props {
   value: string;

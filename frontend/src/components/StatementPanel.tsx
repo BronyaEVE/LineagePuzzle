@@ -8,7 +8,7 @@ import {
   MergeOutlined,
   BuildOutlined,
 } from "@ant-design/icons";
-import type { StatementGroup, StatementType } from "../types";
+import type { StatementGroup } from "../types";
 
 const { Text } = Typography;
 
