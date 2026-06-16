@@ -1,5 +1,7 @@
 # 生产运行依赖（精确锁定版本，保证离线分发包行为一致）
 # 离线打包：pack_offline.bat 用 --python-version 3.11 --platform win_amd64 下载这些版本
+
+# ---- 应用核心 / App core ----
 fastapi==0.135.1
 uvicorn[standard]==0.41.0
 sqlglot==29.0.1
@@ -8,3 +10,23 @@ psycopg2-binary==2.9.10
 pydantic==2.12.5
 pydantic-settings==2.14.0
 filelock==3.29.4
+
+# ---- 办公文档处理 / Office documents (纯 Python) ----
+# Excel 读写（.xlsx）
+openpyxl==3.1.5
+xlsxwriter==3.2.9          # 写入性能优于 openpyxl，适合大批量导出
+xlrd==2.0.2                # 读旧版 .xls
+# Word 读写（.docx）
+python-docx==1.2.0
+# PowerPoint 读写（.pptx）
+python-pptx==1.0.2
+
+# ---- 数据分析 / Data analysis (含 C 扩展，体积大) ----
+numpy==2.4.6               # 数值计算基础（pandas 底层）
+pandas==3.0.3              # DataFrame 数据分析核心
+matplotlib==3.11.0         # 绘图（折线/柱状/散点等）
+
+# ---- 通用工具 / Utilities (纯 Python) ----
+requests==2.34.2           # HTTP 请求
+jinja2==3.1.6              # 模板引擎（生成报告）
+
