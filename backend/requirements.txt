@@ -1,9 +1,10 @@
-fastapi>=0.115.0
-uvicorn[standard]>=0.34.0
-sqlglot>=26.0.0
-sqlalchemy>=2.0.0
-psycopg2-binary>=2.9.0
-pydantic>=2.0.0
-pydantic-settings>=2.0.0
-filelock>=3.13.0
-pytest>=8.0.0
+# 生产运行依赖（精确锁定版本，保证离线分发包行为一致）
+# 离线打包：pack_offline.bat 用 --python-version 3.11 --platform win_amd64 下载这些版本
+fastapi==0.135.1
+uvicorn[standard]==0.41.0
+sqlglot==29.0.1
+SQLAlchemy==2.0.49
+psycopg2-binary==2.9.10
+pydantic==2.12.5
+pydantic-settings==2.14.0
+filelock==3.29.4
