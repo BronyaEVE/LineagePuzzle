@@ -118,6 +118,7 @@ def _build_visualization(
                 target=lin.target_table,
                 label=lin.operation_type.value,
                 statement_seq=lin.statement_seq,
+                column_mappings=lin.column_mappings,
             )
         )
 

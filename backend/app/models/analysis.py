@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from .lineage import Lineage, TableInfo
+from .lineage import ColumnMapping, Lineage, TableInfo
 from .statement import StatementGroup
 
 
@@ -22,6 +22,9 @@ class VisEdge(BaseModel):
     target: str
     label: str
     statement_seq: int
+    # 列级血缘映射（DESIGN.v2 §6.4）：点边时展示目标列←源列
+    # 纯表级边/SELECT * 降级时为空数组
+    column_mappings: list[ColumnMapping] = Field(default_factory=list)
 
 
 class Visualization(BaseModel):
@@ -61,6 +64,9 @@ class GlobalEdge(BaseModel):
     script_id: str
     statement_seq: int
     created_at: str = ""
+    # 列级血缘映射（持久化在 edges.jsonl，全局图点边时展示）
+    # 旧数据无此字段时反序列化为空数组（pydantic 默认值兜底，向后兼容）
+    column_mappings: list[ColumnMapping] = Field(default_factory=list)
 
 
 class GlobalGraph(BaseModel):

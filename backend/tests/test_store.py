@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.services import store
 from app.models.analysis import AnalysisResult, DatabaseInfo, Visualization, VisNode, VisEdge
-from app.models.lineage import Lineage, OperationType, ExtractionMethod, TableInfo, TableType
+from app.models.lineage import Lineage, OperationType, ExtractionMethod, TableInfo, TableType, ColumnMapping
 from app.models.statement import StatementGroup, Statement, StatementType
 
 
@@ -329,6 +329,91 @@ class TestJsonlFormat:
         edges = _read_edges()
         assert len(edges) == 4
         assert {e["script_id"] for e in edges} == {"app1", "app2"}
+
+
+class TestColumnMappingsPersistence:
+    """列级血缘持久化测试（DESIGN.v2 §6.4）"""
+
+    def test_edge_persists_column_mappings(self):
+        """edges.jsonl 持久化 column_mappings"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+        store.save_script(_make_result("cm1", lineages=[
+            Lineage(
+                lineage_id="l-cm", source_table="public.src", target_table="public.dst",
+                operation_type=OperationType.INSERT,
+                extraction_method=ExtractionMethod.STATIC_ANALYSIS,
+                statement_seq=1, dml_statement="INSERT INTO dst (a,b) SELECT x,y FROM src;",
+                column_mappings=[
+                    ColumnMapping(target_table="public.dst", target_column="a",
+                                  source_table="public.src", source_columns=["x"], transformation=None),
+                    ColumnMapping(target_table="public.dst", target_column="b",
+                                  source_table="public.src", source_columns=["y"], transformation=None),
+                ],
+            ),
+        ]))
+
+        edges = _read_edges()
+        assert len(edges) == 1
+        e = edges[0]
+        assert "column_mappings" in e
+        assert len(e["column_mappings"]) == 2
+        assert e["column_mappings"][0]["target_column"] == "a"
+        assert e["column_mappings"][0]["source_columns"] == ["x"]
+        assert e["column_mappings"][1]["target_column"] == "b"
+
+    def test_global_graph_edge_has_column_mappings(self):
+        """get_global_graph 返回的 GlobalEdge 带 column_mappings"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+        store.save_script(_make_result("cm2", lineages=[
+            Lineage(
+                lineage_id="l-cm2", source_table="public.src", target_table="public.dst",
+                operation_type=OperationType.INSERT,
+                extraction_method=ExtractionMethod.STATIC_ANALYSIS,
+                statement_seq=1, dml_statement="INSERT INTO dst (a) SELECT x FROM src;",
+                column_mappings=[
+                    ColumnMapping(target_table="public.dst", target_column="a",
+                                  source_table="public.src", source_columns=["x"], transformation=None),
+                ],
+            ),
+        ]))
+
+        graph = store.get_global_graph()
+        assert len(graph.edges) == 1
+        ge = graph.edges[0]
+        assert len(ge.column_mappings) == 1
+        assert ge.column_mappings[0].target_column == "a"
+        assert ge.column_mappings[0].source_columns == ["x"]
+
+    def test_backward_compat_no_column_mappings(self):
+        """旧 edges.jsonl（无 column_mappings 字段）应反序列化为空数组，不报错"""
+        store._write_json(store.TABLES_FILE, {})
+        # 手工写一条无 column_mappings 的旧格式边
+        store._write_edges([{
+            "edge_id": "old-1",
+            "source": "public.old_src",
+            "target": "public.old_dst",
+            "operation": "INSERT",
+            "script_id": "old-script",
+            "statement_seq": 1,
+            "created_at": "2026-01-01",
+            # 故意没有 column_mappings 字段
+        }])
+        # tables.json 也补上对应表，否则 get_global_graph 过滤孤立表
+        store._write_json(store.TABLES_FILE, {
+            "public.old_src": {"schema": "public", "name": "old_src", "type": "source",
+                               "source": "lineage", "first_seen": "x", "script_ids": ["old-script"],
+                               "script_count": 1, "last_seen": "x", "columns": []},
+            "public.old_dst": {"schema": "public", "name": "old_dst", "type": "target",
+                               "source": "lineage", "first_seen": "x", "script_ids": ["old-script"],
+                               "script_count": 1, "last_seen": "x", "columns": []},
+        })
+
+        # 不应抛异常，column_mappings 兜底为空
+        graph = store.get_global_graph()
+        assert len(graph.edges) == 1
+        assert graph.edges[0].column_mappings == []
 
 
 class TestScriptIdsIndex:

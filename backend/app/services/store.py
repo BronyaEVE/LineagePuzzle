@@ -351,6 +351,9 @@ def _append_edges_for_script(result: AnalysisResult):
             "script_id": result.analysis_id,
             "statement_seq": lin.statement_seq,
             "created_at": now,
+            # 列级血缘映射（DESIGN.v2 §6.4）：持久化到 edges.jsonl，
+            # get_global_graph 反序列化为 GlobalEdge.column_mappings
+            "column_mappings": [cm.model_dump() for cm in lin.column_mappings],
         })
 
 

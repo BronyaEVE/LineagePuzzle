@@ -146,6 +146,7 @@ function App() {
                 visualization={selectedResult?.visualization ?? null}
                 highlightScriptId={selectedScriptId}
                 highlightSeq={highlightSeq}
+                onEdgeSelectSeq={setHighlightSeq}
               />
             </div>
 

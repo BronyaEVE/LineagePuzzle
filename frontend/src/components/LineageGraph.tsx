@@ -12,9 +12,9 @@ import {
   Position,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Card, Empty, Tooltip } from "antd";
+import { Card, Empty, Tooltip, Drawer, Tag, Typography } from "antd";
 import { ColumnWidthOutlined, ColumnHeightOutlined } from "@ant-design/icons";
-import type { GlobalGraph, GlobalEdge, Visualization } from "../types";
+import type { GlobalGraph, GlobalEdge, Visualization, ColumnMapping } from "../types";
 
 const NODE_COLORS: Record<string, string> = {
   source: "#52c41a",
@@ -102,13 +102,17 @@ interface Props {
   visualization: Visualization | null;
   highlightScriptId: string | null;
   highlightSeq: number | null;
+  // 点边时反向高亮对应语句（列级场景：点边→右栏语句高亮）
+  onEdgeSelectSeq?: (seq: number | null) => void;
 }
 
 const LineageGraph: React.FC<Props> = ({
-  globalGraph, visualization, highlightScriptId, highlightSeq,
+  globalGraph, visualization, highlightScriptId, highlightSeq, onEdgeSelectSeq,
 }) => {
   const [layoutDir, setLayoutDir] = useState<LayoutDir>("TB");
   const isVertical = layoutDir === "TB";
+  // 选中的边（点边弹 Drawer 展示列级映射）
+  const [selectedEdge, setSelectedEdge] = useState<Edge | null>(null);
 
   // 当选中脚本时，使用脚本自己的 visualization；否则用全局图
   const { laidNodes, laidEdges } = useMemo(() => {
@@ -130,7 +134,10 @@ const LineageGraph: React.FC<Props> = ({
         source: e.source,
         target: e.target,
         label: e.label,
-        data: { statement_seq: e.statement_seq },
+        data: {
+          statement_seq: e.statement_seq,
+          column_mappings: e.column_mappings || [],  // 列级血缘，点边时展示
+        },
         animated: true,
         markerEnd: { type: MarkerType.ArrowClosed },
         style: { stroke: "#8c8c8c", strokeWidth: 2 },
@@ -163,7 +170,11 @@ const LineageGraph: React.FC<Props> = ({
       source: e.source,
       target: e.target,
       label: e.operation,
-      data: { script_id: e.script_id, statement_seq: e.statement_seq },
+      data: {
+        script_id: e.script_id,
+        statement_seq: e.statement_seq,
+        column_mappings: e.column_mappings || [],  // 列级血缘，点边时展示
+      },
       animated: true,
       markerEnd: { type: MarkerType.ArrowClosed },
       style: { stroke: "#8c8c8c", strokeWidth: 2 },
@@ -179,11 +190,11 @@ const LineageGraph: React.FC<Props> = ({
   const [nodes, setNodes, onNodesChange] = useNodesState(laidNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(laidEdges);
 
-  // 高亮逻辑
+  // 高亮逻辑：语句级（点语句/点边）+ 脚本级（全局图选中脚本）
   React.useEffect(() => {
     setEdges((eds) =>
       eds.map((e) => {
-        // 语句级别高亮（脚本视图）
+        // 优先：语句级别高亮（脚本视图点语句，或点边反高亮）
         if (highlightSeq !== null) {
           const seq = e.data?.statement_seq;
           const hl = seq === highlightSeq;
@@ -193,12 +204,22 @@ const LineageGraph: React.FC<Props> = ({
             labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#999" },
           };
         }
-        // 全局图下全部高亮
+        // 全局图：选中脚本时高亮该脚本（script_id）的边，其他灰
+        if (highlightScriptId !== null) {
+          const sid = (e.data as { script_id?: string } | undefined)?.script_id;
+          const hl = sid === highlightScriptId;
+          return {
+            ...e, animated: hl,
+            style: { ...e.style, stroke: hl ? "#1890ff" : "#d9d9d9", strokeWidth: hl ? 2.5 : 1 },
+            labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#bbb" },
+          };
+        }
+        // 默认：全部正常显示
         return { ...e, animated: false, style: { ...e.style, stroke: "#8c8c8c", strokeWidth: 2 },
           labelStyle: { ...e.labelStyle, fill: "#333" } };
       })
     );
-  }, [highlightSeq, setEdges]);
+  }, [highlightSeq, highlightScriptId, setEdges]);
 
   React.useEffect(() => {
     setNodes(laidNodes);
@@ -236,6 +257,12 @@ const LineageGraph: React.FC<Props> = ({
           <ReactFlow
             nodes={nodes} edges={edges}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+            onEdgeClick={(_, edge) => {
+              setSelectedEdge(edge);
+              // 点边反高亮对应语句（列级场景联动右栏）
+              const seq = (edge.data as { statement_seq?: number } | undefined)?.statement_seq;
+              if (onEdgeSelectSeq && seq !== undefined) onEdgeSelectSeq(seq);
+            }}
             fitView fitViewOptions={{ padding: 0.2 }}
             proOptions={{ hideAttribution: true }}
             minZoom={0.2} maxZoom={2}
@@ -254,6 +281,66 @@ const LineageGraph: React.FC<Props> = ({
       ) : (
         <Empty description={isScriptView ? "该脚本无血缘数据" : "提交第一个脚本开始构建血缘图谱"} style={{ marginTop: 80 }} />
       )}
+
+      {/* 列级血缘映射抽屉：点边展示目标列←源列 + transform */}
+      <Drawer
+        title="列级血缘映射"
+        open={!!selectedEdge}
+        onClose={() => { setSelectedEdge(null); if (onEdgeSelectSeq) onEdgeSelectSeq(null); }}
+        width={440}
+        size="default"
+      >
+        {selectedEdge ? (
+          <>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+              <strong>{selectedEdge.source}</strong> → <strong>{selectedEdge.target}</strong>
+              <span style={{ marginLeft: 8 }}>
+                操作：<Tag color="blue">{selectedEdge.label}</Tag>
+                语句 #{(selectedEdge.data as { statement_seq?: number })?.statement_seq}
+              </span>
+            </Typography.Paragraph>
+            {(() => {
+              const mappings = (selectedEdge.data as { column_mappings?: ColumnMapping[] })?.column_mappings || [];
+              if (mappings.length === 0) {
+                return (
+                  <Empty
+                    description="该边无列级映射（可能为 SELECT * 或纯表级血缘）"
+                    style={{ marginTop: 40 }}
+                  />
+                );
+              }
+              return mappings.map((m, i) => (
+                <div
+                  key={i}
+                  style={{
+                    padding: "10px 12px", marginBottom: 8,
+                    background: "#fafafa", border: "1px solid #f0f0f0", borderRadius: 4,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <Tag color="blue">{m.target_column}</Tag>
+                    <span style={{ color: "#999" }}>←</span>
+                    {m.source_columns.length > 0 ? (
+                      m.source_columns.map((c, ci) => (
+                        <Tag key={ci} color="green">
+                          {m.source_table ? `${m.source_table}.${c}` : c}
+                        </Tag>
+                      ))
+                    ) : (
+                      <Tag>常量</Tag>
+                    )}
+                  </div>
+                  {m.transformation && (
+                    <div style={{ marginTop: 6, fontSize: 12, color: "#fa8c16" }}>
+                      变换：{m.transformation}
+                    </div>
+                  )}
+                </div>
+              ));
+            })()}
+          </>
+        ) : null}
+      </Drawer>
     </Card>
   );
 };

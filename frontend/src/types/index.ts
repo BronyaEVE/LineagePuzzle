@@ -57,9 +57,11 @@ export interface TableInfo {
 }
 
 export interface ColumnMapping {
-  source_column: string;
+  target_table: string;
   target_column: string;
-  transformation?: string;
+  source_table: string;
+  source_columns: string[];  // 表达式可能多源列，如 price*qty → ["price","qty"]
+  transformation: string | null;  // SUM(x)、price*qty；纯列引用为 null
 }
 
 export interface Lineage {
@@ -89,6 +91,8 @@ export interface VisEdge {
   target: string;
   label: string;
   statement_seq: number;
+  // 列级血缘映射（DESIGN.v2 §6.4）：点边时展示目标列←源列
+  column_mappings?: ColumnMapping[];
 }
 
 export interface Visualization {
@@ -130,6 +134,8 @@ export interface GlobalEdge {
   script_id: string;
   statement_seq: number;
   created_at: string;
+  // 列级血缘映射（持久化在 edges.jsonl，点边时展示）
+  column_mappings?: ColumnMapping[];
 }
 
 export interface GlobalGraph {
