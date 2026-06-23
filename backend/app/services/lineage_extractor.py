@@ -137,10 +137,16 @@ def extract_lineages(
 
 def _extract_from_ast(stmt: Statement, lineages: list[Lineage]) -> None:
     """基于静态 AST 解析提取血缘关系。"""
+    from .column_lineage import extract_column_mappings
+
     source_tables = stmt.tables_referenced
     target_tables = stmt.tables_created + stmt.tables_modified
 
     op_type = _stmt_type_to_op(stmt.type)
+
+    # 提取列级映射（一条语句一组，所有表级边共享）
+    # 列级是增强层：失败/降级时返回空列表，不影响表级血缘
+    column_mappings = extract_column_mappings(stmt)
 
     # 有源表和目标表：为每个 (src, tgt) 组合生成一条边
     for src in source_tables:
@@ -154,6 +160,7 @@ def _extract_from_ast(stmt: Statement, lineages: list[Lineage]) -> None:
                     extraction_method=ExtractionMethod.STATIC_ANALYSIS,
                     statement_seq=stmt.seq,
                     dml_statement=stmt.text,
+                    column_mappings=column_mappings,
                 )
             )
     # 单个目标表但没有源表（如 UPDATE SET 常量）也记录目标
@@ -168,6 +175,7 @@ def _extract_from_ast(stmt: Statement, lineages: list[Lineage]) -> None:
                     extraction_method=ExtractionMethod.STATIC_ANALYSIS,
                     statement_seq=stmt.seq,
                     dml_statement=stmt.text,
+                    column_mappings=column_mappings,
                 )
             )
 

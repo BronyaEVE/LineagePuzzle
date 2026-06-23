@@ -39,8 +39,22 @@ class OperationType(str, Enum):
 
 
 class ColumnMapping(BaseModel):
-    source_column: str
+    """列级血缘映射：一个目标列 ← 一个源表的一个或多个源列。
+
+    DESIGN.v2 §6.4 列级血缘 v2.1：
+      - 显式写法 INSERT INTO t(a,b) SELECT x,y 能完整解析
+      - 表达式 price*qty 会拆成多条（每个物理源列一条），transformation 记表达式原文
+      - SELECT * 无法解析（无表结构），降级为表级边，column_mappings 留空
+
+    target_table/target_column: 目标表全限定名 + 目标列名
+    source_table: 源表全限定名（常量时为空字符串）
+    source_columns: 源列名列表（表达式可能引用多列，单列时为 [col]）
+    transformation: 变换表达式（SUM(x)、price*qty 等）；纯列引用时为 None
+    """
+    target_table: str
     target_column: str
+    source_table: str = ""
+    source_columns: list[str] = Field(default_factory=list)
     transformation: str | None = None
 
 
