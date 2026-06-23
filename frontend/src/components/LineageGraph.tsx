@@ -113,6 +113,8 @@ const LineageGraph: React.FC<Props> = ({
   const isVertical = layoutDir === "TB";
   // 选中的边（点边弹 Drawer 展示列级映射）
   const [selectedEdge, setSelectedEdge] = useState<Edge | null>(null);
+  // 单边高亮 id（点边时只高亮这一条，区别于 seq 高亮——一条 JOIN 语句可能有多条边共享 seq）
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
 
   // 当选中脚本时，使用脚本自己的 visualization；否则用全局图
   const { laidNodes, laidEdges } = useMemo(() => {
@@ -190,11 +192,20 @@ const LineageGraph: React.FC<Props> = ({
   const [nodes, setNodes, onNodesChange] = useNodesState(laidNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(laidEdges);
 
-  // 高亮逻辑：语句级（点语句/点边）+ 脚本级（全局图选中脚本）
+  // 高亮逻辑：单边（点边）> 语句级（点语句）> 脚本级（全局图选中脚本）
   React.useEffect(() => {
     setEdges((eds) =>
       eds.map((e) => {
-        // 优先：语句级别高亮（脚本视图点语句，或点边反高亮）
+        // 最高优先级：点边单条高亮（用 edge.id 定位，避免同 seq 多边被误点亮）
+        if (selectedEdgeId !== null) {
+          const hl = e.id === selectedEdgeId;
+          return {
+            ...e, animated: hl,
+            style: { ...e.style, stroke: hl ? "#1890ff" : "#d9d9d9", strokeWidth: hl ? 3 : 1.5 },
+            labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#999" },
+          };
+        }
+        // 语句级别高亮（右栏点语句：该 seq 的所有边，多条是期望行为）
         if (highlightSeq !== null) {
           const seq = e.data?.statement_seq;
           const hl = seq === highlightSeq;
@@ -219,7 +230,7 @@ const LineageGraph: React.FC<Props> = ({
           labelStyle: { ...e.labelStyle, fill: "#333" } };
       })
     );
-  }, [highlightSeq, highlightScriptId, setEdges]);
+  }, [highlightSeq, highlightScriptId, selectedEdgeId, setEdges]);
 
   React.useEffect(() => {
     setNodes(laidNodes);
@@ -259,9 +270,7 @@ const LineageGraph: React.FC<Props> = ({
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
             onEdgeClick={(_, edge) => {
               setSelectedEdge(edge);
-              // 点边反高亮对应语句（列级场景联动右栏）
-              const seq = (edge.data as { statement_seq?: number } | undefined)?.statement_seq;
-              if (onEdgeSelectSeq && seq !== undefined) onEdgeSelectSeq(seq);
+              setSelectedEdgeId(edge.id);  // 单边高亮（只这一条，不用 seq 避免 JOIN 多边误亮）
             }}
             fitView fitViewOptions={{ padding: 0.2 }}
             proOptions={{ hideAttribution: true }}
@@ -286,7 +295,7 @@ const LineageGraph: React.FC<Props> = ({
       <Drawer
         title="列级血缘映射"
         open={!!selectedEdge}
-        onClose={() => { setSelectedEdge(null); if (onEdgeSelectSeq) onEdgeSelectSeq(null); }}
+        onClose={() => { setSelectedEdge(null); setSelectedEdgeId(null); if (onEdgeSelectSeq) onEdgeSelectSeq(null); }}
         width={440}
         size="default"
       >
