@@ -77,3 +77,21 @@ export async function getTables(): Promise<Record<string, any>> {
   if (!res.ok) throw new Error("获取表列表失败");
   return res.json();
 }
+
+// === 参数映射 ===
+
+export async function getParamMapping(): Promise<Record<string, string>> {
+  const res = await fetch(`${API_BASE}/param-mapping`);
+  if (!res.ok) throw new Error("获取参数映射失败");
+  return res.json();
+}
+
+export async function setParamMapping(mapping: Record<string, string>): Promise<Record<string, string>> {
+  const res = await fetch(`${API_BASE}/param-mapping`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(mapping),
+  });
+  if (!res.ok) throw new Error("保存参数映射失败");
+  return res.json();
+}

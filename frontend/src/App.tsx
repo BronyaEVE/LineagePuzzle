@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
-import { ConfigProvider, Layout, Button, Modal, message, Tag } from "antd";
-import { PlusOutlined } from "@ant-design/icons";
+import { ConfigProvider, Layout, Button, Modal, message, Tag, Space } from "antd";
+import { PlusOutlined, SettingOutlined } from "@ant-design/icons";
 import ScriptList from "./components/ScriptList";
 import ScriptEditor from "./components/ScriptEditor";
 import DatabaseConfigForm from "./components/DatabaseConfig";
 import StatementPanel from "./components/StatementPanel";
 import LineageGraph from "./components/LineageGraph";
+import ParamMappingConfig from "./components/ParamMappingConfig";
 import {
   submitAnalysis, listScripts, getScript, deleteScript,
-  renameScript, getGlobalGraph,
+  renameScript, getGlobalGraph, getParamMapping, setParamMapping,
 } from "./api/client";
 import type {
   DatabaseConfig as DatabaseConfigType, AnalysisResult,
@@ -32,6 +33,13 @@ function App() {
   const [dbConfig, setDbConfig] = useState<DatabaseConfigType>({
     host: "localhost", port: 5432, database: "", username: "", password: "",
   });
+
+  // 参数映射配置（${param} → 实际值，全局生效）
+  // paramMapping 是本地编辑草稿，setParamMappingDraft 更新草稿；
+  // 保存时调 import 的 setParamMapping（API）推送到后端
+  const [paramModalOpen, setParamModalOpen] = useState(false);
+  const [paramMapping, setParamMappingDraft] = useState<Record<string, string>>({});
+  const [paramLoading, setParamLoading] = useState(false);
 
   // === 加载数据 ===
   const refreshAll = useCallback(async () => {
@@ -105,6 +113,30 @@ function App() {
     }
   };
 
+  // === 参数映射：打开时拉取，保存时推送 ===
+  const handleOpenParamMapping = async () => {
+    setParamModalOpen(true);
+    try {
+      const mapping = await getParamMapping();
+      setParamMappingDraft(mapping);
+    } catch (e: any) {
+      message.error(e.message || "获取参数映射失败");
+    }
+  };
+
+  const handleSaveParamMapping = async () => {
+    setParamLoading(true);
+    try {
+      await setParamMapping(paramMapping);
+      message.success("参数映射已保存");
+      setParamModalOpen(false);
+    } catch (e: any) {
+      message.error(e.message || "保存参数映射失败");
+    } finally {
+      setParamLoading(false);
+    }
+  };
+
   // === 状态栏统计 ===
   const tableCount = globalGraph?.nodes.length ?? 0;
   const edgeCount = globalGraph?.edges.length ?? 0;
@@ -117,13 +149,22 @@ function App() {
           <div style={{ color: "#fff", fontSize: 18, fontWeight: 600 }}>
             DataLineage Visualizer
           </div>
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={() => setModalOpen(true)}
-          >
-            新建分析
-          </Button>
+          <Space>
+            <Button
+              icon={<SettingOutlined />}
+              onClick={handleOpenParamMapping}
+              style={{ background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,0.3)" }}
+            >
+              参数映射
+            </Button>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => setModalOpen(true)}
+            >
+              新建分析
+            </Button>
+          </Space>
         </Header>
 
         <Content style={{ padding: 12, background: "#f5f5f5", flex: 1 }}>
@@ -189,6 +230,21 @@ function App() {
           onAnalyze={handleAnalyze}
           loading={loading}
         />
+      </Modal>
+
+      {/* 参数映射弹窗 */}
+      <Modal
+        title="参数映射配置"
+        open={paramModalOpen}
+        onCancel={() => setParamModalOpen(false)}
+        onOk={handleSaveParamMapping}
+        confirmLoading={paramLoading}
+        okText="保存"
+        cancelText="取消"
+        width={560}
+        destroyOnHidden
+      >
+        <ParamMappingConfig value={paramMapping} onChange={setParamMappingDraft} />
       </Modal>
     </ConfigProvider>
   );
