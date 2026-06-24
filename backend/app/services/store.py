@@ -28,6 +28,8 @@ TABLES_FILE = DATA_DIR / "tables.json"
 EDGES_FILE = DATA_DIR / "edges.jsonl"  # JSON Lines 格式
 SCRIPTS_DIR = DATA_DIR / "scripts"
 LOCK_FILE = DATA_DIR / "store.lock"
+# 全局参数映射表：${param} → 实际值，分析时用于替换 SQL 里的占位符
+PARAM_MAPPING_FILE = DATA_DIR / "param_mapping.json"
 
 
 def _ensure_dirs():
@@ -268,6 +270,36 @@ def get_global_graph() -> GlobalGraph:
 def get_tables() -> dict:
     """返回全局表注册表。"""
     return _read_json(TABLES_FILE, {})
+
+
+# ============================================================
+# 全局参数映射（${param} → 实际值，分析时替换 SQL 占位符）
+# ============================================================
+
+def get_param_mapping() -> dict[str, str]:
+    """返回全局参数映射表 {param_name: actual_value}。
+
+    用于分析时把 SQL 里的 ${param} 占位符替换成实际值。
+    未配置时返回空 dict（${param} 会保留参数名本身作为标识符）。
+    """
+    return _read_json(PARAM_MAPPING_FILE, {})
+
+
+def set_param_mapping(mapping: dict[str, str]) -> dict[str, str]:
+    """更新全局参数映射表（全量替换），在文件锁保护下写入。
+
+    mapping: {param_name: actual_value}，如 {'icl_schema': 'ods', 'env': 'prod'}
+    返回写入后的完整映射表。
+    """
+    with _store_lock():
+        # 过滤掉空值和非法 key（key 必须是合法标识符，便于 regex \w+ 匹配）
+        import re
+        cleaned = {
+            k: str(v) for k, v in mapping.items()
+            if k and re.fullmatch(r"\w+", k) and str(v).strip()
+        }
+        _write_json(PARAM_MAPPING_FILE, cleaned)
+    return cleaned
 
 
 # ============================================================

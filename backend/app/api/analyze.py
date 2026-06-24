@@ -117,3 +117,25 @@ async def get_global_graph():
 async def get_tables():
     """获取全局表注册表。"""
     return store.get_tables()
+
+
+# === 全局参数映射 ===
+
+@router.get("/param-mapping")
+async def get_param_mapping():
+    """获取全局参数映射表 {param_name: actual_value}。
+
+    用于分析时把 SQL 里的 ${param} 占位符替换成实际值。
+    """
+    return store.get_param_mapping()
+
+
+@router.put("/param-mapping")
+async def set_param_mapping(mapping: dict):
+    """更新全局参数映射表（全量替换）。
+
+    请求体：{"icl_schema": "ods", "env": "prod"}
+    分析时 ${icl_schema}.orders → ods.orders，${env} → prod。
+    key 必须是合法标识符（字母数字下划线），否则被过滤。
+    """
+    return store.set_param_mapping(mapping)

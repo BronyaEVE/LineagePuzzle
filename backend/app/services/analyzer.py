@@ -10,6 +10,7 @@ from ..schemas.requests import DatabaseConfig
 from .db_connector import DBConnector
 from .lineage_extractor import extract_lineages
 from .preprocessor import preprocess
+from . import store
 from .splitter import split_statements
 
 
@@ -23,8 +24,9 @@ def analyze(script: str, db_config: DatabaseConfig | None) -> AnalysisResult:
     不参与血缘提取（不再执行 EXPLAIN）。DB 连接失败时降级为 ast_only。
     """
 
-    # 步骤1+2: 预处理和拆分
-    cleaned = preprocess(script)
+    # 步骤1+2: 预处理（含 ${param} 占位符替换）和拆分
+    param_mapping = store.get_param_mapping()
+    cleaned = preprocess(script, param_mapping=param_mapping)
     group = split_statements(cleaned, original_script=script)
 
     # 步骤3: 提取血缘关系（纯 AST，不依赖 DB）
