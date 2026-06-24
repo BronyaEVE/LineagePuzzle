@@ -514,6 +514,42 @@ class TestScriptIdsIndex:
         # script_ids 变空 → 表被删
         assert "public.tmp" not in tables
 
+    def test_orphan_table_cleaned_when_edge_has_empty_source(self):
+        """回归测试：UPDATE 无源表场景，target 表残留 bug。
+
+        场景：UPDATE order_report SET ...（无源表）→ lineage source_table=""
+        - _merge_tables 会从这条 lineage 的 target 登记表进 tables.json
+        - _append_edges_for_script 跳过 source_table="" 的边（不写 edges.jsonl）
+        - 旧 bug：_collect_affected_tables 只看 edges，收集不到该 target
+          → 删除脚本时孤立表残留
+
+        修复：_remove_script_from_tables 改全表扫，不依赖 affected_tables。
+        """
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+
+        # 构造 source_table="" 的 lineage（UPDATE 无源场景）
+        store.save_script(_make_result("orphan-edge", lineages=[
+            Lineage(
+                lineage_id="l-upd", source_table="", target_table="public.order_report",
+                operation_type=OperationType.UPDATE,
+                extraction_method=ExtractionMethod.STATIC_ANALYSIS,
+                statement_seq=1, dml_statement="UPDATE order_report SET x=1",
+            ),
+        ]))
+
+        # order_report 被登记进 tables.json（从 lineage 收集）
+        tables = json.loads(store.TABLES_FILE.read_text())
+        assert "public.order_report" in tables
+        # 但 edges.jsonl 是空的（source="" 的边不写）
+        assert store._read_edges() == []
+
+        # 删除脚本 → order_report 应被清理（修复后全表扫）
+        store.delete_script("orphan-edge")
+        tables = json.loads(store.TABLES_FILE.read_text())
+        assert "public.order_report" not in tables, "孤立表残留 bug 未修复"
+        assert len(tables) == 0
+
 
 class TestConcurrencySafety:
     """并发写安全测试（文件锁保护）"""

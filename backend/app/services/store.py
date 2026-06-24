@@ -172,17 +172,16 @@ def delete_script(script_id: str) -> bool:
 
     流程（全程持锁）:
       1. 删除脚本文件
-      2. 收集该脚本所有边涉及的表（受影响表集合）
-      3. 重写 edges.jsonl，移除该脚本的边
-      4. 从受影响表的 script_ids 中移除该 script_id；script_ids 变空的表删除
+      2. 重写 edges.jsonl，移除该脚本的边
+      3. 全表扫：从每个表的 script_ids 移除 script_id，script_ids 变空的表删除
+
+    注意：步骤 3 必须全表扫（不能只看 edges 涉及的表），因为表可能从
+    database_info 或无源表 lineage 登记进 tables.json 但不在 edges 里。
     """
     with _store_lock():
         path = SCRIPTS_DIR / f"{script_id}.json"
         if not path.exists():
             return False
-
-        # 先收集该脚本的边涉及的表（在删边之前，避免重复扫描）
-        affected_tables = _collect_affected_tables(script_id)
 
         # 删除脚本文件
         path.unlink()
@@ -190,8 +189,8 @@ def delete_script(script_id: str) -> bool:
         # 删除关联边（重写 edges.jsonl）
         _remove_edges_for_script(script_id)
 
-        # 从受影响表的 script_ids 移除该 script_id，清理孤立表
-        _remove_script_from_tables(script_id, affected_tables)
+        # 全表扫清理：移除 script_id 引用，孤立表删除
+        _remove_script_from_tables(script_id)
 
     return True
 
@@ -220,13 +219,11 @@ def replace_script_edges(result: AnalysisResult) -> AnalysisResult:
     """
     script_id = result.analysis_id
     with _store_lock():
-        # 1. 收集旧边涉及的表
-        affected_tables = _collect_affected_tables(script_id)
-        # 2. 删旧边
+        # 1. 删旧边
         _remove_edges_for_script(script_id)
-        # 3. 从受影响表的 script_ids 移除旧引用
-        _remove_script_from_tables(script_id, affected_tables)
-        # 4. 保存新脚本 + 追加新边 + 合并新表
+        # 2. 全表扫：移除旧 script_ids 引用，孤立表删除
+        _remove_script_from_tables(script_id)
+        # 3. 保存新脚本 + 追加新边 + 合并新表
         if not result.name:
             result.name = f"脚本_{result.created_at.strftime('%m%d_%H%M')}"
         script_path = SCRIPTS_DIR / f"{script_id}.json"
@@ -389,21 +386,6 @@ def _append_edges_for_script(result: AnalysisResult):
         })
 
 
-def _collect_affected_tables(script_id: str) -> set[str]:
-    """收集某脚本所有边涉及的表（source + target），用于精准清理。
-
-    必须在 _store_lock 内、删边之前调用。
-    """
-    affected: set[str] = set()
-    for e in _read_edges():
-        if e.get("script_id") == script_id:
-            affected.add(e.get("source"))
-            affected.add(e.get("target"))
-    affected.discard(None)
-    affected.discard("")
-    return affected
-
-
 def _remove_edges_for_script(script_id: str):
     """删除指定脚本关联的所有全局边（全量重写 edges.jsonl）。
 
@@ -414,19 +396,18 @@ def _remove_edges_for_script(script_id: str):
     _write_edges(edges)
 
 
-def _remove_script_from_tables(script_id: str, affected_tables: set[str]):
-    """从受影响表的 script_ids 中移除 script_id，script_ids 变空的表删除。
+def _remove_script_from_tables(script_id: str):
+    """全表扫：从每个表的 script_ids 移除 script_id，script_ids 变空的表删除。
 
-    基于 script_ids 反向索引，O(受影响表数) 而非 O(边数)。
+    必须全表扫而非只看 edges 涉及的表，因为表可能从 database_info 或
+    无源表 lineage（UPDATE 无源场景，边不写 edges.jsonl）登记进 tables.json，
+    但这些表不一定出现在 edges 里。只看 edges 会漏（孤立表残留 bug）。
+    tables.json 每个表带 script_ids 反向索引，全表扫 O(表数) 可接受。
     必须在 _store_lock 内调用。
     """
-    if not affected_tables:
-        return
     tables = _read_json(TABLES_FILE, {})
     changed = False
     for name in list(tables.keys()):
-        if name not in affected_tables:
-            continue
         rec = tables[name]
         sids = rec.get("script_ids", [])
         if script_id in sids:
@@ -434,9 +415,8 @@ def _remove_script_from_tables(script_id: str, affected_tables: set[str]):
             rec["script_ids"] = sids
             rec["script_count"] = len(sids)
             changed = True
-        # script_ids 为空 → 该表不再被任何脚本引用 → 删除（孤立表清理）
-        if not sids:
-            del tables[name]
-            changed = True
+            # script_ids 为空 → 该表不再被任何脚本引用 → 删除（孤立表清理）
+            if not sids:
+                del tables[name]
     if changed:
         _write_json(TABLES_FILE, tables)
