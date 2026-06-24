@@ -128,7 +128,12 @@ function App() {
     setParamLoading(true);
     try {
       await setParamMapping(paramMapping);
-      message.success("参数映射已保存");
+      // 参数映射在「分析新脚本时」生效，不会回溯改变已分析的脚本节点。
+      // 提示用户重新分析才能看到新映射的效果。
+      message.success({
+        content: "参数映射已保存。重新分析脚本后，新映射才会生效（已有脚本的节点不会自动更新）",
+        duration: 5,
+      });
       setParamModalOpen(false);
     } catch (e: any) {
       message.error(e.message || "保存参数映射失败");
