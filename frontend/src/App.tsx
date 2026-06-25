@@ -155,7 +155,7 @@ function App() {
   return (
     <ConfigProvider theme={{ token: { colorPrimary: "#1890ff" } }}>
       <Layout style={{ minHeight: "100vh" }}>
-        <Header style={{ background: "#001529", padding: "0 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <Header style={{ background: "#001529", padding: "0 24px", display: "flex", alignItems: "center", justifyContent: "space-between", overflow: "hidden", flexShrink: 0 }}>
           <div style={{ color: "#fff", fontSize: 18, fontWeight: 600 }}>
             DataLineage Visualizer
           </div>
