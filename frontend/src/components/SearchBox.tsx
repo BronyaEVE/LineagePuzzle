@@ -106,17 +106,24 @@ const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
     <>
       {/* 深色 Header 下的样式：钉成和按钮一样高（32px），用 flex 居中避免 line-height 错位 */}
       <style>{`
+        /* 约束整个 AutoComplete 外层及各层高度，和按钮（32px）一致 */
+        .header-search.ant-select {
+          height: 32px !important;
+        }
         .header-search .ant-select-selector {
           background: rgba(255,255,255,0.08) !important;
           border-color: rgba(255,255,255,0.3) !important;
           height: 32px !important;
           min-height: 32px !important;
+          padding-top: 0 !important;
+          padding-bottom: 0 !important;
           display: flex !important;
           align-items: center !important;
         }
         .header-search .ant-select-selection-search,
         .header-search .ant-select-selection-search-input {
           height: 30px !important;
+          margin: 0 !important;
           display: flex !important;
           align-items: center !important;
         }
@@ -124,6 +131,7 @@ const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
           color: rgba(255,255,255,0.45) !important;
           display: flex !important;
           align-items: center !important;
+          height: 30px !important;
         }
         .header-search input {
           color: #fff !important;
@@ -131,6 +139,7 @@ const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
         }
         .header-search .ant-select-suffix {
           color: rgba(255,255,255,0.5) !important;
+          align-self: center !important;
         }
         .header-search .anticon-search {
           color: rgba(255,255,255,0.5) !important;
