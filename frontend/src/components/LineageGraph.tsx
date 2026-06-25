@@ -6,9 +6,9 @@ import {
   MiniMap,
   useNodesState,
   useEdgesState,
-  useReactFlow,
   type Node,
   type Edge,
+  type ReactFlowInstance,
   MarkerType,
   Position,
 } from "@xyflow/react";
@@ -173,8 +173,9 @@ const LineageGraph: React.FC<Props> = ({
 }) => {
   const [layoutDir, setLayoutDir] = useState<LayoutDir>("TB");
   const isVertical = layoutDir === "TB";
-  // React Flow 实例，用于程序化聚焦（搜索选中后 fitView 到目标节点）
-  const reactFlow = useReactFlow();
+  // React Flow 实例（onInit 时获取，替代 useReactFlow——后者要求在 Provider 内调用，
+  // 而 LineageGraph 本身就是渲染 <ReactFlow> 的组件，不是其子组件，直接调 useReactFlow 会白屏）
+  const reactFlowRef = React.useRef<ReactFlowInstance | null>(null);
   // 选中的边（点边弹 Drawer 展示列级映射）
   const [selectedEdge, setSelectedEdge] = useState<Edge | null>(null);
   // 单边高亮 id（点边时只高亮这一条，区别于 seq 高亮——一条 JOIN 语句可能有多条边共享 seq）
@@ -300,10 +301,11 @@ const LineageGraph: React.FC<Props> = ({
 
   // 搜索选中后聚焦+高亮（由 App 的 focusTarget 驱动）
   React.useEffect(() => {
-    if (!focusTarget) return;
+    if (!focusTarget || !reactFlowRef.current) return;
+    const rf = reactFlowRef.current;
     if (focusTarget.type === "node") {
       // 聚焦单个节点 + 展开表名 + 清边高亮
-      reactFlow.fitView({ nodes: [{ id: focusTarget.id }], padding: 0.5, duration: 400, maxZoom: 1.5 });
+      rf.fitView({ nodes: [{ id: focusTarget.id }], padding: 0.5, duration: 400, maxZoom: 1.5 });
       setExpandedNodeId(focusTarget.id);
       setSelectedEdgeId(null);
       setSelectedEdge(null);
@@ -311,7 +313,7 @@ const LineageGraph: React.FC<Props> = ({
       // 聚焦边的两端节点 + 单边高亮
       const found = edges.find((e) => e.id === focusTarget.id);
       if (found) {
-        reactFlow.fitView({
+        rf.fitView({
           nodes: [{ id: found.source }, { id: found.target }],
           padding: 0.5, duration: 400, maxZoom: 1.5,
         });
@@ -358,6 +360,7 @@ const LineageGraph: React.FC<Props> = ({
           <ReactFlow
             nodes={nodes} edges={edges}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+            onInit={(inst) => { reactFlowRef.current = inst; }}
             onNodeClick={(_, node) => {
               // 点击节点切换展开/收起：展开时显示完整表名（不限长），再点收起
               setExpandedNodeId((prev) => (prev === node.id ? null : node.id));
