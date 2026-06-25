@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { ConfigProvider, Layout, Button, Modal, message, Tag, Space } from "antd";
-import { PlusOutlined, SettingOutlined } from "@ant-design/icons";
+import { ConfigProvider, Layout, Button, Modal, message, Tag, Space, Popconfirm } from "antd";
+import { PlusOutlined, SettingOutlined, DownloadOutlined, UploadOutlined } from "@ant-design/icons";
 import ScriptList from "./components/ScriptList";
 import ScriptEditor from "./components/ScriptEditor";
 import DatabaseConfigForm from "./components/DatabaseConfig";
@@ -12,6 +12,7 @@ import ParamMappingConfig from "./components/ParamMappingConfig";
 import {
   submitAnalysis, listScripts, getScript, deleteScript,
   renameScript, getGlobalGraph, getParamMapping, setParamMapping,
+  exportData, importData,
 } from "./api/client";
 import type {
   DatabaseConfig as DatabaseConfigType, AnalysisResult,
@@ -133,8 +134,6 @@ function App() {
     setParamLoading(true);
     try {
       await setParamMapping(paramMapping);
-      // 参数映射在「分析新脚本时」生效，不会回溯改变已分析的脚本节点。
-      // 提示用户重新分析才能看到新映射的效果。
       message.success({
         content: "参数映射已保存。重新分析脚本后，新映射才会生效（已有脚本的节点不会自动更新）",
         duration: 5,
@@ -144,6 +143,36 @@ function App() {
       message.error(e.message || "保存参数映射失败");
     } finally {
       setParamLoading(false);
+    }
+  };
+
+  // === 导入导出 ===
+  const handleExport = async () => {
+    try {
+      const data = await exportData();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      a.href = url;
+      a.download = `lineage-export-${ts}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      message.success("导出成功");
+    } catch (e: any) {
+      message.error(e.message || "导出失败");
+    }
+  };
+
+  const handleImport = async (file: File) => {
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      await importData(payload);
+      message.success("导入成功，数据已覆盖");
+      await refreshAll();
+    } catch (e: any) {
+      message.error(e.message || "导入失败，请检查文件格式");
     }
   };
 
@@ -160,6 +189,42 @@ function App() {
             DataLineage Visualizer
           </div>
           <Space>
+            <Button
+              icon={<DownloadOutlined />}
+              onClick={handleExport}
+              style={{ background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,0.3)" }}
+            >
+              导出
+            </Button>
+            <Popconfirm
+              title="导入会覆盖当前所有数据"
+              description="确定继续吗？"
+              onConfirm={() => {
+                // 触发隐藏的 file input
+                document.getElementById("import-file-input")?.click();
+              }}
+              okText="确定覆盖"
+              cancelText="取消"
+            >
+              <Button
+                icon={<UploadOutlined />}
+                style={{ background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,0.3)" }}
+              >
+                导入
+              </Button>
+            </Popconfirm>
+            {/* 隐藏的文件选择器，由 Popconfirm 确认后触发 */}
+            <input
+              id="import-file-input"
+              type="file"
+              accept=".json"
+              style={{ display: "none" }}
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (f) await handleImport(f);
+                e.target.value = "";  // 重置，允许重复选同一文件
+              }}
+            />
             <SearchBox
               nodes={(selectedScriptId ? selectedResult?.visualization.nodes : globalGraph?.nodes) || []}
               edges={

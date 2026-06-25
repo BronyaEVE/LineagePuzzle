@@ -13,8 +13,9 @@ import {
   Position,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Card, Empty, Tooltip, Drawer, Tag, Typography } from "antd";
-import { ColumnWidthOutlined, ColumnHeightOutlined } from "@ant-design/icons";
+import { Card, Empty, Tooltip, Drawer, Tag, Typography, Button, message } from "antd";
+import { ColumnWidthOutlined, ColumnHeightOutlined, FileImageOutlined, FileOutlined } from "@ant-design/icons";
+import { toPng } from "html-to-image";
 import type { GlobalGraph, GlobalEdge, Visualization, ColumnMapping } from "../types";
 
 const NODE_COLORS: Record<string, string> = {
@@ -176,6 +177,8 @@ const LineageGraph: React.FC<Props> = ({
   // React Flow 实例（onInit 时获取，替代 useReactFlow——后者要求在 Provider 内调用，
   // 而 LineageGraph 本身就是渲染 <ReactFlow> 的组件，不是其子组件，直接调 useReactFlow 会白屏）
   const reactFlowRef = React.useRef<ReactFlowInstance | null>(null);
+  // 包裹 ReactFlow 的 div，用于 html-to-image 截图（PNG 导出）
+  const wrapperRef = React.useRef<HTMLDivElement>(null);
   // 选中的边（点边弹 Drawer 展示列级映射）
   const [selectedEdge, setSelectedEdge] = useState<Edge | null>(null);
   // 单边高亮 id（点边时只高亮这一条，区别于 seq 高亮——一条 JOIN 语句可能有多条边共享 seq）
@@ -332,6 +335,75 @@ const LineageGraph: React.FC<Props> = ({
   const hasData = laidNodes.length > 0;
   const isScriptView = !!highlightScriptId && !!visualization?.nodes.length;
 
+  // === 图形导出 ===
+  const handleExportPng = async () => {
+    if (!wrapperRef.current) return;
+    try {
+      // 先重置视口到全图，确保截图覆盖所有节点
+      reactFlowRef.current?.fitView({ padding: 0.2, duration: 0 });
+      // 等一帧让 React Flow 完成重置
+      await new Promise((r) => setTimeout(r, 100));
+      const dataUrl = await toPng(wrapperRef.current!, {
+        backgroundColor: "#fff",
+        filter: (node) => {
+          // 排除 React Flow 的控件（Controls/MiniMap），只截图画
+          const cls = (node as HTMLElement).className;
+          return typeof cls !== "string" || (!cls.includes("react-flow__controls") && !cls.includes("react-flow__minimap"));
+        },
+      });
+      const a = document.createElement("a");
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      a.href = dataUrl;
+      a.download = `lineage-${ts}.png`;
+      a.click();
+    } catch {
+      message.error("导出 PNG 失败");
+    }
+  };
+
+  const handleExportHtml = () => {
+    // 导出自包含 HTML：nodes/edges JSON + React Flow CDN，打开是可缩放只读图
+    const data = JSON.stringify({ nodes: laidNodes, edges: laidEdges }, null, 2);
+    const html = `<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>DataLineage 血缘图</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xyflow/react@12/dist/style.css">
+<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xyflow/react@12/dist/umd/index.js"></script>
+<style>
+  body { margin: 0; }
+  #app { width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+  var graphData = ${data};
+  var e = React.createElement;
+  var app = e(XyFlow.ReactFlow,
+    { nodes: graphData.nodes, edges: graphData.edges, fitView: true,
+      proOptions: { hideAttribution: true } },
+    e(XyFlow.Background, { gap: 16 }),
+    e(XyFlow.Controls),
+    e(XyFlow.MiniMap)
+  );
+  ReactDOM.createRoot(document.getElementById('app')).render(app);
+</script>
+</body>
+</html>`;
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    a.href = url;
+    a.download = `lineage-${ts}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <Card
       title={isScriptView ? "脚本血缘图" : "全局血缘图谱"}
@@ -339,24 +411,32 @@ const LineageGraph: React.FC<Props> = ({
       style={{ height: "100%" }}
       extra={
         hasData ? (
-          <Tooltip title={isVertical ? "切换为水平布局" : "切换为垂直布局"}>
-            <button
-              onClick={() => setLayoutDir(isVertical ? "LR" : "TB")}
-              style={{
-                background: "transparent", border: "1px solid #d9d9d9", borderRadius: 4,
-                padding: "2px 8px", cursor: "pointer", fontSize: 14, color: "#666",
-                display: "inline-flex", alignItems: "center", gap: 4,
-              }}
-            >
-              {isVertical ? <ColumnWidthOutlined /> : <ColumnHeightOutlined />}
-              {isVertical ? "水平" : "垂直"}
-            </button>
-          </Tooltip>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <Tooltip title={isVertical ? "切换为水平布局" : "切换为垂直布局"}>
+              <button
+                onClick={() => setLayoutDir(isVertical ? "LR" : "TB")}
+                style={{
+                  background: "transparent", border: "1px solid #d9d9d9", borderRadius: 4,
+                  padding: "2px 8px", cursor: "pointer", fontSize: 14, color: "#666",
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                }}
+              >
+                {isVertical ? <ColumnWidthOutlined /> : <ColumnHeightOutlined />}
+                {isVertical ? "水平" : "垂直"}
+              </button>
+            </Tooltip>
+            <Tooltip title="导出为 PNG 图片">
+              <Button size="small" icon={<FileImageOutlined />} onClick={handleExportPng}>PNG</Button>
+            </Tooltip>
+            <Tooltip title="导出为自包含 HTML（可缩放，需联网打开）">
+              <Button size="small" icon={<FileOutlined />} onClick={handleExportHtml}>HTML</Button>
+            </Tooltip>
+          </div>
         ) : null
       }
     >
       {hasData ? (
-        <div style={{ height: "calc(100vh - 160px)", minHeight: 300 }}>
+        <div ref={wrapperRef} style={{ height: "calc(100vh - 160px)", minHeight: 300 }}>
           <ReactFlow
             nodes={nodes} edges={edges}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}

@@ -774,3 +774,88 @@ class TestQualifiedNameNormalization:
         assert len(graph.edges) == 1
         assert graph.edges[0].source == "public.src"
         assert graph.edges[0].target == "dw.tgt"
+
+
+class TestExportImport:
+    """导入导出测试：export_all / import_all 全量覆盖 + roundtrip"""
+
+    def test_export_returns_all_sections(self):
+        """导出包含 version/exported_at/tables/edges/scripts/param_mapping"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+        store.save_script(_make_result("exp1"))
+
+        data = store.export_all()
+        assert data["version"] == 1
+        assert "exported_at" in data
+        assert isinstance(data["tables"], dict)
+        assert isinstance(data["edges"], list)
+        assert "exp1" in data["scripts"]
+        assert isinstance(data["param_mapping"], dict)
+
+    def test_export_empty_data(self):
+        """空数据也能导出"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+        # 清空 scripts 目录
+        for f in store.SCRIPTS_DIR.glob("*.json"):
+            f.unlink()
+        data = store.export_all()
+        assert data["tables"] == {}
+        assert data["edges"] == []
+        assert data["scripts"] == {}
+
+    def test_import_overwrites_everything(self):
+        """导入全量覆盖现有数据"""
+        store._write_json(store.TABLES_FILE, {})
+        store._write_edges([])
+        store.save_script(_make_result("old1"))
+        assert "old1" in [s.analysis_id for s in store.list_scripts()]
+
+        # 导入全新数据（不含 old1）
+        store.import_all({
+            "version": 1,
+            "tables": {"public.x": {"schema": "public", "name": "x", "type": "source",
+                                    "source": "lineage", "first_seen": "x",
+                                    "script_ids": ["new1"], "script_count": 1,
+                                    "last_seen": "x", "columns": []}},
+            "edges": [],
+            "scripts": {"new1": {"analysis_id": "new1", "name": "新脚本",
+                                 "created_at": "2026-01-01", "input_script": "",
+                                 "lineages": [], "extraction_mode": "ast_only"}},
+            "param_mapping": {"env": "prod"},
+        })
+
+        # old1 应被清掉，new1 在
+        summaries = store.list_scripts()
+        ids = [s.analysis_id for s in summaries]
+        assert "new1" in ids
+        assert "old1" not in ids
+        # param_mapping 也被覆盖
+        assert store.get_param_mapping() == {"env": "prod"}
+
+    def test_export_import_roundtrip(self):
+        """导出 → 清空 → 导入 → 数据一致"""
+        # 彻底清空（防止其他测试残留）
+        store.import_all({"version": 1, "tables": {}, "edges": [], "scripts": {}, "param_mapping": {}})
+        store.save_script(_make_result("rt1"))
+        store.save_script(_make_result("rt2"))
+        store.set_param_mapping({"icl_schema": "ods"})
+
+        # 导出
+        exported = store.export_all()
+        assert len(exported["scripts"]) == 2
+        exported_edge_count = len(exported["edges"])
+
+        # 清空
+        store.import_all({"version": 1, "tables": {}, "edges": [], "scripts": {}, "param_mapping": {}})
+        assert len(store.list_scripts()) == 0
+
+        # 导入回来
+        store.import_all(exported)
+
+        # 验证数据一致
+        re_exported = store.export_all()
+        assert set(re_exported["scripts"].keys()) == {"rt1", "rt2"}
+        assert re_exported["param_mapping"] == {"icl_schema": "ods"}
+        assert len(re_exported["edges"]) == exported_edge_count

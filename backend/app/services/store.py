@@ -300,6 +300,53 @@ def set_param_mapping(mapping: dict[str, str]) -> dict[str, str]:
 
 
 # ============================================================
+# 导入导出（全量数据）
+# ============================================================
+
+def export_all() -> dict:
+    """聚合导出全部数据为单个 dict。
+
+    包含 tables / edges / scripts / param_mapping 四部分，
+    附加 version 和 exported_at 时间戳，用于迁移、备份、分享。
+    """
+    _ensure_dirs()
+    scripts: dict[str, dict] = {}
+    for f in SCRIPTS_DIR.glob("*.json"):
+        try:
+            scripts[f.stem] = _read_json(f)
+        except Exception:
+            continue
+    return {
+        "version": 1,
+        "exported_at": datetime.now().isoformat(),
+        "tables": _read_json(TABLES_FILE, {}),
+        "edges": _read_edges(),
+        "scripts": scripts,
+        "param_mapping": get_param_mapping(),
+    }
+
+
+def import_all(payload: dict) -> None:
+    """全量导入（在 _store_lock 内整体替换 4 处文件）。
+
+    payload 结构同 export_all 的输出。导入前会清空现有 scripts 目录，
+    然后逐个写入。tables/edges/param_mapping 直接覆盖。
+    """
+    with _store_lock():
+        # tables
+        _write_json(TABLES_FILE, payload.get("tables", {}))
+        # edges
+        _write_edges(payload.get("edges", []))
+        # scripts：先清空目录，再逐个写入
+        for f in SCRIPTS_DIR.glob("*.json"):
+            f.unlink()
+        for sid, data in payload.get("scripts", {}).items():
+            _write_json(SCRIPTS_DIR / f"{sid}.json", data)
+        # param_mapping（绕过 set_param_mapping 的锁，因为已在锁内）
+        _write_json(PARAM_MAPPING_FILE, payload.get("param_mapping", {}))
+
+
+# ============================================================
 # 内部方法
 # ============================================================
 

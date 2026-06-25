@@ -139,3 +139,24 @@ async def set_param_mapping(mapping: dict):
     key 必须是合法标识符（字母数字下划线），否则被过滤。
     """
     return store.set_param_mapping(mapping)
+
+
+# === 导入导出 ===
+
+@router.get("/export")
+async def export_data():
+    """导出全部分析数据（tables + edges + scripts + param_mapping）。
+
+    返回单个 JSON，可保存为文件用于备份/迁移。
+    """
+    return store.export_all()
+
+
+@router.post("/import")
+async def import_data(payload: dict):
+    """导入全部分析数据（全量覆盖现有数据）。
+
+    请求体：export_all 的输出格式。会覆盖现有 tables/edges/scripts/param_mapping。
+    """
+    store.import_all(payload)
+    return {"status": "ok", "message": "导入完成"}

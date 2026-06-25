@@ -95,3 +95,20 @@ export async function setParamMapping(mapping: Record<string, string>): Promise<
   if (!res.ok) throw new Error("保存参数映射失败");
   return res.json();
 }
+
+// === 导入导出 ===
+
+export async function exportData(): Promise<Record<string, any>> {
+  const res = await fetch(`${API_BASE}/export`);
+  if (!res.ok) throw new Error("导出失败");
+  return res.json();
+}
+
+export async function importData(payload: Record<string, any>): Promise<void> {
+  const res = await fetch(`${API_BASE}/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("导入失败");
+}
