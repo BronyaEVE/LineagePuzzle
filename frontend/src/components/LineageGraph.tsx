@@ -6,6 +6,7 @@ import {
   MiniMap,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   type Node,
   type Edge,
   MarkerType,
@@ -150,6 +151,12 @@ function autoLayout(nodes: Node[], edges: Edge[], dir: LayoutDir): Node[] {
   }));
 }
 
+/** 搜索/程序化聚焦目标：node 聚焦单个节点，edge 聚焦 source+target 两端 */
+export interface FocusTarget {
+  type: "node" | "edge";
+  id: string;  // node: node.id；edge: 边的 id（React Flow 生成的 e-${i}/ge-${i}）
+}
+
 interface Props {
   globalGraph: GlobalGraph | null;
   visualization: Visualization | null;
@@ -157,13 +164,17 @@ interface Props {
   highlightSeq: number | null;
   // 点边时反向高亮对应语句（列级场景：点边→右栏语句高亮）
   onEdgeSelectSeq?: (seq: number | null) => void;
+  // 搜索选中后聚焦+高亮（由 App/Header 的搜索框驱动）
+  focusTarget?: FocusTarget | null;
 }
 
 const LineageGraph: React.FC<Props> = ({
-  globalGraph, visualization, highlightScriptId, highlightSeq, onEdgeSelectSeq,
+  globalGraph, visualization, highlightScriptId, highlightSeq, onEdgeSelectSeq, focusTarget,
 }) => {
   const [layoutDir, setLayoutDir] = useState<LayoutDir>("TB");
   const isVertical = layoutDir === "TB";
+  // React Flow 实例，用于程序化聚焦（搜索选中后 fitView 到目标节点）
+  const reactFlow = useReactFlow();
   // 选中的边（点边弹 Drawer 展示列级映射）
   const [selectedEdge, setSelectedEdge] = useState<Edge | null>(null);
   // 单边高亮 id（点边时只高亮这一条，区别于 seq 高亮——一条 JOIN 语句可能有多条边共享 seq）
@@ -181,7 +192,9 @@ const LineageGraph: React.FC<Props> = ({
           id: n.id,
           data: { label: expanded ? n.label : truncateLabel(n.label), fullName: n.label, nodeType: n.type },
           position: { x: 0, y: 0 },
-          style: expanded ? { ...nodeStyle(n.type), maxWidth: "none" } : nodeStyle(n.type),
+          style: expanded
+            ? { ...nodeStyle(n.type), maxWidth: "none", border: "3px solid #fff", boxShadow: "0 0 8px rgba(255,255,255,0.8)" }
+            : nodeStyle(n.type),
         };
       });
       const edges: Edge[] = visualization.edges.map((e, i) => ({
@@ -215,7 +228,9 @@ const LineageGraph: React.FC<Props> = ({
         id: n.id,
         data: { label: expanded ? n.label : truncateLabel(n.label), fullName: n.label, nodeType: n.type },
         position: { x: 0, y: 0 },
-        style: expanded ? { ...nodeStyle(n.type), maxWidth: "none" } : nodeStyle(n.type),
+        style: expanded
+          ? { ...nodeStyle(n.type), maxWidth: "none", border: "3px solid #fff", boxShadow: "0 0 8px rgba(255,255,255,0.8)" }
+          : nodeStyle(n.type),
       };
     });
     const edges: Edge[] = globalGraph.edges.map((e: GlobalEdge, i: number) => ({
@@ -282,6 +297,30 @@ const LineageGraph: React.FC<Props> = ({
       })
     );
   }, [highlightSeq, highlightScriptId, selectedEdgeId, setEdges]);
+
+  // 搜索选中后聚焦+高亮（由 App 的 focusTarget 驱动）
+  React.useEffect(() => {
+    if (!focusTarget) return;
+    if (focusTarget.type === "node") {
+      // 聚焦单个节点 + 展开表名 + 清边高亮
+      reactFlow.fitView({ nodes: [{ id: focusTarget.id }], padding: 0.5, duration: 400, maxZoom: 1.5 });
+      setExpandedNodeId(focusTarget.id);
+      setSelectedEdgeId(null);
+      setSelectedEdge(null);
+    } else {
+      // 聚焦边的两端节点 + 单边高亮
+      const found = edges.find((e) => e.id === focusTarget.id);
+      if (found) {
+        reactFlow.fitView({
+          nodes: [{ id: found.source }, { id: found.target }],
+          padding: 0.5, duration: 400, maxZoom: 1.5,
+        });
+        setSelectedEdgeId(found.id);
+        setSelectedEdge(found);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusTarget]);
 
   React.useEffect(() => {
     setNodes(laidNodes);

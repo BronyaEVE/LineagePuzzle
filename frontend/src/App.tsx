@@ -6,6 +6,8 @@ import ScriptEditor from "./components/ScriptEditor";
 import DatabaseConfigForm from "./components/DatabaseConfig";
 import StatementPanel from "./components/StatementPanel";
 import LineageGraph from "./components/LineageGraph";
+import type { FocusTarget } from "./components/LineageGraph";
+import SearchBox, { type SearchTarget } from "./components/SearchBox";
 import ParamMappingConfig from "./components/ParamMappingConfig";
 import {
   submitAnalysis, listScripts, getScript, deleteScript,
@@ -25,6 +27,9 @@ function App() {
   const [selectedScriptId, setSelectedScriptId] = useState<string | null>(null);
   const [selectedResult, setSelectedResult] = useState<AnalysisResult | null>(null);
   const [highlightSeq, setHighlightSeq] = useState<number | null>(null);
+
+  // 搜索框选中后聚焦目标（传给 LineageGraph 执行 fitView + 高亮）
+  const [focusTarget, setFocusTarget] = useState<FocusTarget | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -155,6 +160,20 @@ function App() {
             DataLineage Visualizer
           </div>
           <Space>
+            <SearchBox
+              nodes={(selectedScriptId ? selectedResult?.visualization.nodes : globalGraph?.nodes) || []}
+              edges={
+                (selectedScriptId
+                  ? selectedResult?.visualization.edges?.map((e, i) => ({ ...e, _edgeId: `e-${i}` }))
+                  : globalGraph?.edges?.map((e, i) => ({ ...e, _edgeId: `ge-${i}` }))) || []
+              }
+              onSelectTarget={(t: SearchTarget) => {
+                // 边的 id 在不同视图前缀不同（e- vs ge-），SearchTarget.id 来自 SearchBox 的 _edgeId
+                setFocusTarget(t);
+                // node 类型切换为全局图模式（清脚本选中）以便在全局图里聚焦
+                // 实际聚焦由 LineageGraph 内部 fitView 完成
+              }}
+            />
             <Button
               icon={<SettingOutlined />}
               onClick={handleOpenParamMapping}
@@ -193,6 +212,7 @@ function App() {
                 highlightScriptId={selectedScriptId}
                 highlightSeq={highlightSeq}
                 onEdgeSelectSeq={setHighlightSeq}
+                focusTarget={focusTarget}
               />
             </div>
 
