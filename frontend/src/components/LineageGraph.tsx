@@ -28,14 +28,43 @@ const NODE_BORDER_COLORS: Record<string, string> = {
   target: "#096dd9",
 };
 
-const NODE_W = 160;
 const NODE_H = 40;
+// 节点宽度自适应：短表名收缩到最小，超长表名上限封顶 + 省略号
+// schema.table 全限定名长度变化大（orders vs staging.tmp_order_detail），
+// 固定宽度会截断短名/撑破长名，fit-content + 上下限最稳妥
+const NODE_MIN_W = 110;
+const NODE_MAX_W = 280;
 const LAYER_GAP_TB = 100;
 const NODE_GAP_TB = 70;
 const LAYER_GAP_LR = 200;
 const NODE_GAP_LR = 70;
 
 type LayoutDir = "TB" | "LR";
+
+/**
+ * 节点样式：宽度自适应（fit-content）但有上下限。
+ * 短名（orders）收缩到 NODE_MIN_W；长名（staging.tmp_order_detail）
+ * 增长到 NODE_MAX_W 封顶，label 用 ellipsis 截断。
+ * label 文字包一层带 overflow 的 span，超出 maxWidth 显示省略号。
+ */
+function nodeStyle(nodeType: string): React.CSSProperties {
+  return {
+    background: NODE_COLORS[nodeType] || "#d9d9d9",
+    border: `2px solid ${NODE_BORDER_COLORS[nodeType] || "#8c8c8c"}`,
+    borderRadius: 6,
+    padding: "8px 12px",
+    fontSize: 13,
+    fontWeight: 600,
+    color: "#fff",
+    minWidth: NODE_MIN_W,
+    maxWidth: NODE_MAX_W,
+    width: "fit-content",
+    textAlign: "center" as const,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  };
+}
 
 function autoLayout(nodes: Node[], edges: Edge[], dir: LayoutDir): Node[] {
   if (nodes.length === 0) return nodes;
@@ -73,7 +102,8 @@ function autoLayout(nodes: Node[], edges: Edge[], dir: LayoutDir): Node[] {
 
   const layerGap = isVertical ? LAYER_GAP_TB : LAYER_GAP_LR;
   const nodeGap = isVertical ? NODE_GAP_TB : NODE_GAP_LR;
-  const nodeSize = isVertical ? NODE_H : NODE_W;
+  // 布局间距按最宽节点算（节点宽度现在可变 110-280），宁可松不可重叠
+  const nodeSize = isVertical ? NODE_H : NODE_MAX_W;
   const posMap: Record<string, { x: number; y: number }> = {};
 
   layers.forEach((layer, li) => {
@@ -124,12 +154,7 @@ const LineageGraph: React.FC<Props> = ({
         id: n.id,
         data: { label: n.label, nodeType: n.type },
         position: { x: 0, y: 0 },
-        style: {
-          background: NODE_COLORS[n.type] || "#d9d9d9",
-          border: `2px solid ${NODE_BORDER_COLORS[n.type] || "#8c8c8c"}`,
-          borderRadius: 6, padding: "8px 16px", fontSize: 13, fontWeight: 600,
-          color: "#fff", width: NODE_W, textAlign: "center" as const,
-        },
+        style: nodeStyle(n.type),
       }));
       const edges: Edge[] = visualization.edges.map((e, i) => ({
         id: `e-${i}`,
@@ -160,12 +185,7 @@ const LineageGraph: React.FC<Props> = ({
       id: n.id,
       data: { label: n.label, nodeType: n.type },
       position: { x: 0, y: 0 },
-      style: {
-        background: NODE_COLORS[n.type] || "#d9d9d9",
-        border: `2px solid ${NODE_BORDER_COLORS[n.type] || "#8c8c8c"}`,
-        borderRadius: 6, padding: "8px 16px", fontSize: 13, fontWeight: 600,
-        color: "#fff", width: NODE_W, textAlign: "center" as const,
-      },
+      style: nodeStyle(n.type),
     }));
     const edges: Edge[] = globalGraph.edges.map((e: GlobalEdge, i: number) => ({
       id: `ge-${i}`,
