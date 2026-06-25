@@ -32,12 +32,13 @@ const NODE_H = 40;
 // 节点宽度自适应：短表名收缩到最小，超长表名上限封顶 + 省略号
 // schema.table 全限定名长度变化大（orders vs staging.tmp_order_detail），
 // 固定宽度会截断短名/撑破长名，fit-content + 上下限最稳妥
-const NODE_MIN_W = 110;
-const NODE_MAX_W = 280;
-const LAYER_GAP_TB = 100;
-const NODE_GAP_TB = 90;   // TB 层内水平间距（节点宽 110-280，gap 要够大避免重叠）
-const LAYER_GAP_LR = 200;
-const NODE_GAP_LR = 50;   // LR 层内垂直间距（按高度 40，gap 50 足够）
+// maxWidth 必须和布局间距基准匹配，gap 要留足余量吃掉渲染宽度误差
+const NODE_MIN_W = 120;
+const NODE_MAX_W = 260;
+const LAYER_GAP_TB = 110;  // TB 层间距（垂直，按高度）
+const NODE_GAP_TB = 120;   // TB 层内水平间距（节点宽 120-260，gap 留足余量避免重叠）
+const LAYER_GAP_LR = 240;  // LR 层间距（水平，按宽度 260+）
+const NODE_GAP_LR = 40;    // LR 层内垂直间距（按高度 40）
 
 type LayoutDir = "TB" | "LR";
 
@@ -47,6 +48,23 @@ type LayoutDir = "TB" | "LR";
  * 增长到 NODE_MAX_W 封顶，label 用 ellipsis 截断。
  * label 文字包一层带 overflow 的 span，超出 maxWidth 显示省略号。
  */
+// 表名显示截断阈值：超过则在 schema 名后省略，保证节点宽度可控
+// 完整名仍存在 node.data.fullName，避免 CSS ellipsis 在 React Flow
+// 嵌套结构里失效导致节点撑破 maxWidth 进而重叠
+const LABEL_MAX_CHARS = 24;
+
+function truncateLabel(label: string): string {
+  if (label.length <= LABEL_MAX_CHARS) return label;
+  // schema.table 格式：保留 schema + 前几个字符 + 省略号
+  const dotIdx = label.indexOf(".");
+  if (dotIdx > 0 && dotIdx < LABEL_MAX_CHARS - 3) {
+    const schema = label.slice(0, dotIdx + 1);
+    const rest = label.slice(dotIdx + 1, LABEL_MAX_CHARS - schema.length - 1);
+    return `${schema}${rest}…`;
+  }
+  return label.slice(0, LABEL_MAX_CHARS - 1) + "…";
+}
+
 function nodeStyle(nodeType: string): React.CSSProperties {
   return {
     background: NODE_COLORS[nodeType] || "#d9d9d9",
@@ -154,7 +172,7 @@ const LineageGraph: React.FC<Props> = ({
     if (highlightScriptId && visualization && visualization.nodes.length > 0) {
       const nodes: Node[] = visualization.nodes.map((n) => ({
         id: n.id,
-        data: { label: n.label, nodeType: n.type },
+        data: { label: truncateLabel(n.label), fullName: n.label, nodeType: n.type },
         position: { x: 0, y: 0 },
         style: nodeStyle(n.type),
       }));
@@ -185,7 +203,7 @@ const LineageGraph: React.FC<Props> = ({
 
     const nodes: Node[] = globalGraph.nodes.map((n) => ({
       id: n.id,
-      data: { label: n.label, nodeType: n.type },
+      data: { label: truncateLabel(n.label), fullName: n.label, nodeType: n.type },
       position: { x: 0, y: 0 },
       style: nodeStyle(n.type),
     }));
