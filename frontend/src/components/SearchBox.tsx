@@ -104,17 +104,30 @@ const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
 
   return (
     <>
-      {/* 深色 Header 下的样式适配：只调颜色，高度交给 antd size=middle 默认（32px，和按钮一致） */}
+      {/* 深色 Header 下的样式：钉成和按钮一样高（32px），用 flex 居中避免 line-height 错位 */}
       <style>{`
         .header-search .ant-select-selector {
           background: rgba(255,255,255,0.08) !important;
           border-color: rgba(255,255,255,0.3) !important;
+          height: 32px !important;
+          min-height: 32px !important;
+          display: flex !important;
+          align-items: center !important;
+        }
+        .header-search .ant-select-selection-search,
+        .header-search .ant-select-selection-search-input {
+          height: 30px !important;
+          display: flex !important;
+          align-items: center !important;
         }
         .header-search .ant-select-selection-placeholder {
           color: rgba(255,255,255,0.45) !important;
+          display: flex !important;
+          align-items: center !important;
         }
         .header-search input {
           color: #fff !important;
+          height: 30px !important;
         }
         .header-search .ant-select-suffix {
           color: rgba(255,255,255,0.5) !important;
@@ -129,7 +142,6 @@ const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
     <AutoComplete
       style={{ width: 220 }}
       rootClassName="header-search"
-      size="middle"
       options={options}
       // 大小写不敏感子串匹配
       filterOption={(input, option) => {
