@@ -30,15 +30,16 @@ const NODE_BORDER_COLORS: Record<string, string> = {
 
 const NODE_H = 40;
 // 节点宽度自适应：短表名收缩到最小，超长表名上限封顶 + 省略号
-// schema.table 全限定名长度变化大（orders vs staging.tmp_order_detail），
-// 固定宽度会截断短名/撑破长名，fit-content + 上下限最稳妥
-// maxWidth 必须和布局间距基准匹配，gap 要留足余量吃掉渲染宽度误差
 const NODE_MIN_W = 120;
 const NODE_MAX_W = 260;
-const LAYER_GAP_TB = 110;  // TB 层间距（垂直，按高度）
-const NODE_GAP_TB = 120;   // TB 层内水平间距（节点宽 120-260，gap 留足余量避免重叠）
-const LAYER_GAP_LR = 240;  // LR 层间距（水平，按宽度 260+）
-const NODE_GAP_LR = 40;    // LR 层内垂直间距（按高度 40）
+
+// 布局参数（TB 和 LR 几何语义不同，分开定义避免混用导致重叠）：
+//   TB（垂直）：层间沿 y 轴（垂直），层内沿 x 轴（水平）→ 层内按节点【宽度】算间距
+//   LR（水平）：层间沿 x 轴（水平），层内沿 y 轴（垂直）→ 层内按节点【高度】算间距
+const LAYER_GAP_TB = 110;   // TB 层与层之间的垂直间距（y 轴）
+const INTRA_GAP_TB = 120;   // TB 层内节点之间的水平间距（x 轴，按宽度）
+const LAYER_GAP_LR = 300;   // LR 层与层之间的水平间距（x 轴，需 ≥ 节点宽度 + 箭头空间）
+const INTRA_GAP_LR = 30;    // LR 层内节点之间的垂直间距（y 轴，按高度）
 
 type LayoutDir = "TB" | "LR";
 
@@ -118,19 +119,21 @@ function autoLayout(nodes: Node[], edges: Edge[], dir: LayoutDir): Node[] {
   const remaining = nodes.filter((n) => !assigned.has(n.id)).map((n) => n.id);
   if (remaining.length > 0) layers.push(remaining);
 
+  // 层间间距（层与层之间）：TB 沿 y 轴，LR 沿 x 轴
   const layerGap = isVertical ? LAYER_GAP_TB : LAYER_GAP_LR;
-  const nodeGap = isVertical ? NODE_GAP_TB : NODE_GAP_LR;
-  // 层内排列的节点尺寸基准：
-  //   TB 模式层内是水平排列（x 轴）→ 按宽度算间距，用 MAX_W（节点宽 110-280）
-  //   LR 模式层内是垂直排列（y 轴）→ 按高度算间距，用 NODE_H
-  const nodeSize = isVertical ? NODE_MAX_W : NODE_H;
+  // 层内间距（同层节点之间）：TB 沿 x 轴（水平，按宽度），LR 沿 y 轴（垂直，按高度）
+  const intraGap = isVertical ? INTRA_GAP_TB : INTRA_GAP_LR;
+  // 层内排列方向的节点尺寸：TB 按宽度（节点宽 120-260），LR 按高度（40）
+  const intraSize = isVertical ? NODE_MAX_W : NODE_H;
   const posMap: Record<string, { x: number; y: number }> = {};
 
   layers.forEach((layer, li) => {
-    const span = layer.length * (nodeSize + nodeGap) - nodeGap;
+    // TB：offset 是 x（层内水平排列），y 是层间距
+    // LR：offset 是 y（层内垂直排列），x 是层间距
+    const span = layer.length * (intraSize + intraGap) - intraGap;
     const start = -span / 2;
     layer.forEach((id, ni) => {
-      const offset = start + ni * (nodeSize + nodeGap);
+      const offset = start + ni * (intraSize + intraGap);
       if (isVertical) {
         posMap[id] = { x: offset, y: li * layerGap };
       } else {
@@ -165,17 +168,22 @@ const LineageGraph: React.FC<Props> = ({
   const [selectedEdge, setSelectedEdge] = useState<Edge | null>(null);
   // 单边高亮 id（点边时只高亮这一条，区别于 seq 高亮——一条 JOIN 语句可能有多条边共享 seq）
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  // 展开的节点 id：点击节点时记录，该节点显示完整名（不限长），其他节点保持截断
+  const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
 
   // 当选中脚本时，使用脚本自己的 visualization；否则用全局图
   const { laidNodes, laidEdges } = useMemo(() => {
     // 选了脚本 → 用脚本级别的 visualization
     if (highlightScriptId && visualization && visualization.nodes.length > 0) {
-      const nodes: Node[] = visualization.nodes.map((n) => ({
-        id: n.id,
-        data: { label: truncateLabel(n.label), fullName: n.label, nodeType: n.type },
-        position: { x: 0, y: 0 },
-        style: nodeStyle(n.type),
-      }));
+      const nodes: Node[] = visualization.nodes.map((n) => {
+        const expanded = expandedNodeId === n.id;
+        return {
+          id: n.id,
+          data: { label: expanded ? n.label : truncateLabel(n.label), fullName: n.label, nodeType: n.type },
+          position: { x: 0, y: 0 },
+          style: expanded ? { ...nodeStyle(n.type), maxWidth: "none" } : nodeStyle(n.type),
+        };
+      });
       const edges: Edge[] = visualization.edges.map((e, i) => ({
         id: `e-${i}`,
         source: e.source,
@@ -201,12 +209,15 @@ const LineageGraph: React.FC<Props> = ({
       return { laidNodes: [], laidEdges: [] };
     }
 
-    const nodes: Node[] = globalGraph.nodes.map((n) => ({
-      id: n.id,
-      data: { label: truncateLabel(n.label), fullName: n.label, nodeType: n.type },
-      position: { x: 0, y: 0 },
-      style: nodeStyle(n.type),
-    }));
+    const nodes: Node[] = globalGraph.nodes.map((n) => {
+      const expanded = expandedNodeId === n.id;
+      return {
+        id: n.id,
+        data: { label: expanded ? n.label : truncateLabel(n.label), fullName: n.label, nodeType: n.type },
+        position: { x: 0, y: 0 },
+        style: expanded ? { ...nodeStyle(n.type), maxWidth: "none" } : nodeStyle(n.type),
+      };
+    });
     const edges: Edge[] = globalGraph.edges.map((e: GlobalEdge, i: number) => ({
       id: `ge-${i}`,
       source: e.source,
@@ -227,7 +238,7 @@ const LineageGraph: React.FC<Props> = ({
     }));
 
     return { laidNodes: autoLayout(nodes, edges, layoutDir), laidEdges: edges };
-  }, [globalGraph, visualization, highlightScriptId, layoutDir]);
+  }, [globalGraph, visualization, highlightScriptId, layoutDir, expandedNodeId]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(laidNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(laidEdges);
@@ -308,6 +319,10 @@ const LineageGraph: React.FC<Props> = ({
           <ReactFlow
             nodes={nodes} edges={edges}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+            onNodeClick={(_, node) => {
+              // 点击节点切换展开/收起：展开时显示完整表名（不限长），再点收起
+              setExpandedNodeId((prev) => (prev === node.id ? null : node.id));
+            }}
             onEdgeClick={(_, edge) => {
               setSelectedEdge(edge);
               setSelectedEdgeId(edge.id);  // 单边高亮（只这一条，不用 seq 避免 JOIN 多边误亮）
