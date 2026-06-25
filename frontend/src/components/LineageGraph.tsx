@@ -35,9 +35,9 @@ const NODE_H = 40;
 const NODE_MIN_W = 110;
 const NODE_MAX_W = 280;
 const LAYER_GAP_TB = 100;
-const NODE_GAP_TB = 70;
+const NODE_GAP_TB = 90;   // TB 层内水平间距（节点宽 110-280，gap 要够大避免重叠）
 const LAYER_GAP_LR = 200;
-const NODE_GAP_LR = 70;
+const NODE_GAP_LR = 50;   // LR 层内垂直间距（按高度 40，gap 50 足够）
 
 type LayoutDir = "TB" | "LR";
 
@@ -102,8 +102,10 @@ function autoLayout(nodes: Node[], edges: Edge[], dir: LayoutDir): Node[] {
 
   const layerGap = isVertical ? LAYER_GAP_TB : LAYER_GAP_LR;
   const nodeGap = isVertical ? NODE_GAP_TB : NODE_GAP_LR;
-  // 布局间距按最宽节点算（节点宽度现在可变 110-280），宁可松不可重叠
-  const nodeSize = isVertical ? NODE_H : NODE_MAX_W;
+  // 层内排列的节点尺寸基准：
+  //   TB 模式层内是水平排列（x 轴）→ 按宽度算间距，用 MAX_W（节点宽 110-280）
+  //   LR 模式层内是垂直排列（y 轴）→ 按高度算间距，用 NODE_H
+  const nodeSize = isVertical ? NODE_MAX_W : NODE_H;
   const posMap: Record<string, { x: number; y: number }> = {};
 
   layers.forEach((layer, li) => {
