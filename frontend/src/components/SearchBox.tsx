@@ -104,29 +104,22 @@ const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
 
   return (
     <>
-      {/* 深色 Header 下的样式适配：placeholder 浅灰可读，hover 边框变亮 */}
+      {/* 深色 Header 下的样式适配：只调颜色，高度交给 antd size=middle 默认（32px，和按钮一致） */}
       <style>{`
-        .header-search {
-          height: 36px !important;
-        }
         .header-search .ant-select-selector {
           background: rgba(255,255,255,0.08) !important;
           border-color: rgba(255,255,255,0.3) !important;
-          height: 36px !important;
-          min-height: 36px !important;
         }
-        .header-search .ant-select-selection-search-input {
-          height: 36px !important;
-        }
-        .header-search .ant-select-selection-placeholder,
-        .header-search input::placeholder {
+        .header-search .ant-select-selection-placeholder {
           color: rgba(255,255,255,0.45) !important;
-          line-height: 34px !important;
         }
         .header-search input {
           color: #fff !important;
         }
         .header-search .ant-select-suffix {
+          color: rgba(255,255,255,0.5) !important;
+        }
+        .header-search .anticon-search {
           color: rgba(255,255,255,0.5) !important;
         }
         .header-search:hover .ant-select-selector {
@@ -155,7 +148,6 @@ const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
       <Input
         prefix={<SearchOutlined />}
         placeholder="搜索表名/字段名"
-        variant="borderless"
       />
     </AutoComplete>
     </>
