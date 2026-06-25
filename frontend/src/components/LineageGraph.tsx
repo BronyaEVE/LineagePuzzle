@@ -276,8 +276,8 @@ const LineageGraph: React.FC<Props> = ({
             labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#bbb" },
           };
         }
-        // 默认：全部正常显示
-        return { ...e, animated: false, style: { ...e.style, stroke: "#8c8c8c", strokeWidth: 2 },
+        // 默认：全部正常显示（恢复流动动画，和初始化状态一致）
+        return { ...e, animated: true, style: { ...e.style, stroke: "#8c8c8c", strokeWidth: 2 },
           labelStyle: { ...e.labelStyle, fill: "#333" } };
       })
     );
