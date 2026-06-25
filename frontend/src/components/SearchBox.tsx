@@ -103,8 +103,30 @@ const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
   }, [nodes, edges]);
 
   return (
+    <>
+      {/* 深色 Header 下的样式适配：placeholder 浅灰可读，hover 边框变亮 */}
+      <style>{`
+        .header-search .ant-select-selector {
+          background: rgba(255,255,255,0.08) !important;
+          border-color: rgba(255,255,255,0.3) !important;
+        }
+        .header-search .ant-select-selection-placeholder,
+        .header-search input::placeholder {
+          color: rgba(255,255,255,0.45) !important;
+        }
+        .header-search input {
+          color: #fff !important;
+        }
+        .header-search .ant-select-suffix {
+          color: rgba(255,255,255,0.5) !important;
+        }
+        .header-search:hover .ant-select-selector {
+          border-color: rgba(255,255,255,0.5) !important;
+        }
+      `}</style>
     <AutoComplete
-      style={{ width: 260 }}
+      style={{ width: 220 }}
+      rootClassName="header-search"
       options={options}
       // 大小写不敏感子串匹配
       filterOption={(input, option) => {
@@ -117,11 +139,16 @@ const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
         if (target) onSelectTarget(target);
       }}
       allowClear
-      placeholder="搜索表名或字段名..."
-      suffixIcon={<SearchOutlined />}
-    >
-      <Input />
+      // 下拉面板用默认白底（避免被 Header 深色背景影响）
+      popupClassName="search-dropdown"
+      >
+      <Input
+        prefix={<SearchOutlined />}
+        placeholder="搜索表名/字段名"
+        variant="borderless"
+      />
     </AutoComplete>
+    </>
   );
 };
 
