@@ -17,6 +17,7 @@ import { Card, Empty, Tooltip, Drawer, Tag, Typography, Button, message } from "
 import { ColumnWidthOutlined, ColumnHeightOutlined, FileImageOutlined, FileOutlined } from "@ant-design/icons";
 import { toPng } from "html-to-image";
 import type { GlobalGraph, GlobalEdge, Visualization, ColumnMapping } from "../types";
+import { impactAnalysis as fetchImpactAnalysis } from "../api/client";
 
 const NODE_COLORS: Record<string, string> = {
   source: "#52c41a",
@@ -167,10 +168,12 @@ interface Props {
   onEdgeSelectSeq?: (seq: number | null) => void;
   // 搜索选中后聚焦+高亮（由 App/Header 的搜索框驱动）
   focusTarget?: FocusTarget | null;
+  // 影响分析触发时通知 App（脚本视图需切回全局图）
+  onImpactTrigger?: () => void;
 }
 
 const LineageGraph: React.FC<Props> = ({
-  globalGraph, visualization, highlightScriptId, highlightSeq, onEdgeSelectSeq, focusTarget,
+  globalGraph, visualization, highlightScriptId, highlightSeq, onEdgeSelectSeq, focusTarget, onImpactTrigger,
 }) => {
   const [layoutDir, setLayoutDir] = useState<LayoutDir>("TB");
   const isVertical = layoutDir === "TB";
@@ -185,6 +188,10 @@ const LineageGraph: React.FC<Props> = ({
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   // 展开的节点 id：点击节点时记录，该节点显示完整名（不限长），其他节点保持截断
   const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
+  // 影响分析高亮的边 id 集合：downstream 橙色、upstream 青色（单击节点触发）
+  const [impactDownstreamEdges, setImpactDownstreamEdges] = useState<Set<string>>(new Set());
+  const [impactUpstreamEdges, setImpactUpstreamEdges] = useState<Set<string>>(new Set());
+  const hasImpactHighlight = impactDownstreamEdges.size > 0 || impactUpstreamEdges.size > 0;
 
   // 当选中脚本时，使用脚本自己的 visualization；否则用全局图
   const { laidNodes, laidEdges } = useMemo(() => {
@@ -262,7 +269,7 @@ const LineageGraph: React.FC<Props> = ({
   const [nodes, setNodes, onNodesChange] = useNodesState(laidNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(laidEdges);
 
-  // 高亮逻辑：单边（点边）> 语句级（点语句）> 脚本级（全局图选中脚本）
+  // 高亮逻辑：单边（点边）> 影响分析（上下游双色）> 语句级（点语句）> 脚本级 > 默认
   React.useEffect(() => {
     setEdges((eds) =>
       eds.map((e) => {
@@ -273,6 +280,31 @@ const LineageGraph: React.FC<Props> = ({
             ...e, animated: hl,
             style: { ...e.style, stroke: hl ? "#1890ff" : "#d9d9d9", strokeWidth: hl ? 3 : 1.5 },
             labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#999" },
+          };
+        }
+        // 影响分析高亮：下游橙 #fa8c16，上游青 #13c2c2，无关边灰
+        if (hasImpactHighlight) {
+          const isDown = impactDownstreamEdges.has(e.id);
+          const isUp = impactUpstreamEdges.has(e.id);
+          if (isDown) {
+            return {
+              ...e, animated: true,
+              style: { ...e.style, stroke: "#fa8c16", strokeWidth: 3 },
+              labelStyle: { ...e.labelStyle, fill: "#fa8c16" },
+            };
+          }
+          if (isUp) {
+            return {
+              ...e, animated: true,
+              style: { ...e.style, stroke: "#13c2c2", strokeWidth: 3 },
+              labelStyle: { ...e.labelStyle, fill: "#13c2c2" },
+            };
+          }
+          // 无关边：灰、不流动
+          return {
+            ...e, animated: false,
+            style: { ...e.style, stroke: "#d9d9d9", strokeWidth: 1 },
+            labelStyle: { ...e.labelStyle, fill: "#bbb" },
           };
         }
         // 语句级别高亮（右栏点语句：该 seq 的所有边，多条是期望行为）
@@ -300,7 +332,7 @@ const LineageGraph: React.FC<Props> = ({
           labelStyle: { ...e.labelStyle, fill: "#333" } };
       })
     );
-  }, [highlightSeq, highlightScriptId, selectedEdgeId, setEdges]);
+  }, [highlightSeq, highlightScriptId, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, setEdges]);
 
   // 搜索选中后聚焦+高亮（由 App 的 focusTarget 驱动）
   React.useEffect(() => {
@@ -442,8 +474,59 @@ const LineageGraph: React.FC<Props> = ({
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
             onInit={(inst) => { reactFlowRef.current = inst; }}
             onNodeClick={(_, node) => {
-              // 点击节点切换展开/收起：展开时显示完整表名（不限长），再点收起
-              setExpandedNodeId((prev) => (prev === node.id ? null : node.id));
+              // 再次点同一节点：收起表名 + 取消影响分析高亮
+              if (expandedNodeId === node.id) {
+                setExpandedNodeId(null);
+                setImpactDownstreamEdges(new Set());
+                setImpactUpstreamEdges(new Set());
+                return;
+              }
+              // 展开表名
+              setExpandedNodeId(node.id);
+              // 触发影响分析（脚本视图下先切回全局图）
+              if (onImpactTrigger) onImpactTrigger();
+              // 调 API + 计算 edge id 高亮集合
+              fetchImpactAnalysis(node.id).then((result) => {
+                if (result.error || (!result.downstream.length && !result.upstream.length)) {
+                  setImpactDownstreamEdges(new Set());
+                  setImpactUpstreamEdges(new Set());
+                  return;
+                }
+                // 建 (src→tgt) → edgeId 索引（全局图边 id 是 ge-${i}）
+                const edgeIndex = new Map<string, string>();
+                const sourceEdges = globalGraph?.edges || [];
+                sourceEdges.forEach((e, i) => {
+                  edgeIndex.set(`${e.source}→${e.target}`, `ge-${i}`);
+                });
+                // 下游 paths 展开成边 id 集合
+                const downIds = new Set<string>();
+                for (const path of Object.values(result.paths)) {
+                  for (let i = 0; i < path.length - 1; i++) {
+                    const eid = edgeIndex.get(`${path[i]}→${path[i + 1]}`);
+                    if (eid) downIds.add(eid);
+                  }
+                }
+                // 上游：反查 upstream 表到当前表的路径（API 没返回 upstream paths，
+                // 用 ancestors + 逐对查边）
+                const upIds = new Set<string>();
+                for (const upTable of result.upstream) {
+                  // 对每个上游表，查找它的边是否指向当前表或另一个上游表（简化：直接查所有 upstream→当前方向）
+                  // 实际：上游边 = 所有 source 在 upstream 集合、target 也在 upstream+当前表集合 的边
+                  if (edgeIndex.has(`${upTable}→${node.id}`)) {
+                    upIds.add(edgeIndex.get(`${upTable}→${node.id}`)!);
+                  }
+                  // 中间上游链路（upstream 表之间的边）
+                  for (const otherUp of result.upstream) {
+                    const eid = edgeIndex.get(`${upTable}→${otherUp}`);
+                    if (eid) upIds.add(eid);
+                  }
+                }
+                setImpactDownstreamEdges(downIds);
+                setImpactUpstreamEdges(upIds);
+              }).catch(() => {
+                setImpactDownstreamEdges(new Set());
+                setImpactUpstreamEdges(new Set());
+              });
             }}
             onEdgeClick={(_, edge) => {
               setSelectedEdge(edge);

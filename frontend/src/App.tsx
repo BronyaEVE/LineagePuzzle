@@ -278,6 +278,7 @@ function App() {
                 highlightSeq={highlightSeq}
                 onEdgeSelectSeq={setHighlightSeq}
                 focusTarget={focusTarget}
+                onImpactTrigger={() => setSelectedScriptId(null)}
               />
             </div>
 

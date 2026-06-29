@@ -1,6 +1,6 @@
 import type {
   AnalysisResult, AnalyzeRequest, CorrectStatementRequest,
-  ScriptSummary, GlobalGraph, StatementGroup,
+  ScriptSummary, GlobalGraph, StatementGroup, ImpactAnalysis,
 } from "../types";
 
 const API_BASE = "/api";
@@ -111,4 +111,12 @@ export async function importData(payload: Record<string, any>): Promise<void> {
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error("导入失败");
+}
+
+// === 影响分析 ===
+
+export async function impactAnalysis(table: string): Promise<ImpactAnalysis> {
+  const res = await fetch(`${API_BASE}/impact-analysis/${encodeURIComponent(table)}`);
+  if (!res.ok) throw new Error("影响分析失败");
+  return res.json();
 }

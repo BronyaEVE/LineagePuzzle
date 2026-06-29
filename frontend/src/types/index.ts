@@ -142,3 +142,16 @@ export interface GlobalGraph {
   nodes: VisNode[];
   edges: GlobalEdge[];
 }
+
+// === 影响分析 ===
+
+export interface ImpactAnalysis {
+  table: string;
+  downstream: string[];
+  upstream: string[];
+  downstream_count: number;
+  upstream_count: number;
+  paths: Record<string, string[]>;  // {下游表: [起点, ..., 终点]}
+  has_cycle: boolean;
+  error?: string;
+}
