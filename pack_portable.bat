@@ -86,7 +86,7 @@ echo       Files copied
 REM --- 6. Smoke test: import critical C extensions via embedded python ---
 echo.
 echo Validating embedded Python can import C extensions ...
-"%PY_DIR%\python.exe" -c "import fastapi,uvicorn,sqlglot,sqlalchemy,pydantic_core._pydantic_core,numpy,pandas,matplotlib,psycopg2,greenlet;print('ALL IMPORTS OK')"
+"%PY_DIR%\python.exe" -c "import fastapi,uvicorn,sqlglot,sqlalchemy,pydantic_core._pydantic_core,psycopg2,greenlet,networkx;print('ALL IMPORTS OK')"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :error_import
 
