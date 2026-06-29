@@ -347,6 +347,69 @@ def import_all(payload: dict) -> None:
 
 
 # ============================================================
+# 影响分析（基于 networkx 内存图，存储仍是 JSON）
+# ============================================================
+
+def build_graph():
+    """从 edges.jsonl 构建 networkx 有向图。
+
+    每次调用都从存储重新构建（数据量小，O(n) 即可）。
+    边的属性携带 operation / script_id / statement_seq 供后续分析。
+    """
+    import networkx as nx
+
+    G = nx.DiGraph()
+    for e in _read_edges():
+        src = e.get("source", "")
+        tgt = e.get("target", "")
+        if src and tgt:
+            G.add_edge(src, tgt,
+                       operation=e.get("operation", ""),
+                       script_id=e.get("script_id", ""),
+                       statement_seq=e.get("statement_seq", 0))
+    return G
+
+
+def impact_analysis(table: str) -> dict:
+    """影响分析：给定一个表，返回其上游/下游/路径/环信息。
+
+    - downstream: 改这个表会影响哪些下游表（递归遍历所有后代）
+    - upstream: 这个表的数据来自哪些上游表（递归遍历所有祖先）
+    - paths: 下游最短路径（table → 各下游表的具体链路）
+    - has_cycle: 全局图谱是否有环（数据流不应有环，有环说明分析有误）
+    """
+    import networkx as nx
+
+    G = build_graph()
+    # 表名可能含特殊字符，networkx 节点 id 就是全限定名
+    if table not in G:
+        return {"table": table, "error": "表不存在于血缘图中", "downstream": [], "upstream": []}
+
+    downstream = sorted(nx.descendants(G, table))
+    upstream = sorted(nx.ancestors(G, table))
+
+    # 到每个下游的最短路径
+    paths = {}
+    for d in downstream:
+        try:
+            paths[d] = nx.shortest_path(G, table, d)
+        except nx.NetworkXNoPath:
+            paths[d] = []
+
+    has_cycle = not nx.is_directed_acyclic_graph(G)
+
+    return {
+        "table": table,
+        "downstream": downstream,
+        "upstream": upstream,
+        "downstream_count": len(downstream),
+        "upstream_count": len(upstream),
+        "paths": paths,
+        "has_cycle": has_cycle,
+    }
+
+
+# ============================================================
 # 内部方法
 # ============================================================
 

@@ -160,3 +160,18 @@ async def import_data(payload: dict):
     """
     store.import_all(payload)
     return {"status": "ok", "message": "导入完成"}
+
+
+# === 影响分析 ===
+
+@router.get("/impact-analysis/{table}")
+async def impact_analysis(table: str):
+    """影响分析：给定一个表，返回其上游/下游/路径/环信息。
+
+    用于回答：
+    - "改了 orders 表，哪些下游表受影响？"（downstream）
+    - "order_report 的数据来自哪些上游表？"（upstream）
+    - "从 orders 到 daily_summary 的最短路径是什么？"（paths）
+    - "全局血缘是否有环？"（has_cycle，有环说明数据流有误）
+    """
+    return store.impact_analysis(table)
