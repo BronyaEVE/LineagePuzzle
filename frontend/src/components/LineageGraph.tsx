@@ -500,16 +500,21 @@ const LineageGraph: React.FC<Props> = ({
               if (onImpactTrigger) onImpactTrigger();
               // 竞态防护：本次点击的 token，响应回来时校验是否仍是最新点击
               const myToken = ++impactTokenRef.current;
-              // 把路径数组展开成边 id 集合的工具
+              // 把「全部路径」展开成边 id 集合的工具。
+              // v2.3：后端返回 list[list[str]]（全部路径，含菱形依赖的平行路径），
+              // 例如 A→C 的 upstream_paths["A"] = [["A","C"], ["A","B","C"]]。
+              // 展开两层：每个上游表 → 多条路径 → 每条路径的相邻边。
               const buildEdgeSet = (
-                pathsArr: Record<string, string[]>,
+                pathsMap: Record<string, string[][]>,
                 edgeIndex: Map<string, string>,
               ): Set<string> => {
                 const ids = new Set<string>();
-                for (const path of Object.values(pathsArr)) {
-                  for (let i = 0; i < path.length - 1; i++) {
-                    const eid = edgeIndex.get(`${path[i]}→${path[i + 1]}`);
-                    if (eid) ids.add(eid);
+                for (const pathList of Object.values(pathsMap)) {
+                  for (const path of pathList) {
+                    for (let i = 0; i < path.length - 1; i++) {
+                      const eid = edgeIndex.get(`${path[i]}→${path[i + 1]}`);
+                      if (eid) ids.add(eid);
+                    }
                   }
                 }
                 return ids;
@@ -529,15 +534,17 @@ const LineageGraph: React.FC<Props> = ({
                 edges.forEach((e) => {
                   edgeIndex.set(`${e.source}→${e.target}`, e.id);
                 });
-                // 下游路径 → 边 id 集合（橙色）
-                const downIds = buildEdgeSet(result.paths, edgeIndex);
-                // 上游路径 → 边 id 集合（青色）。用后端返回的 upstream_paths，
-                // 精确给出「上游表 → 当前表」的真实链路，无需前端 O(n²) 推算。
-                const upIds = result.upstream_paths
-                  ? buildEdgeSet(result.upstream_paths, edgeIndex)
-                  : new Set<string>();
+                // 下游全部路径 → 边 id 集合（橙色）
+                const downIds = buildEdgeSet(result.paths || {}, edgeIndex);
+                // 上游全部路径 → 边 id 集合（青色）。含菱形依赖的平行路径，
+                // 确保 A→B→C 且 A→C 时 A→B 这条中间边也被高亮。
+                const upIds = buildEdgeSet(result.upstream_paths || {}, edgeIndex);
                 setImpactDownstreamEdges(downIds);
                 setImpactUpstreamEdges(upIds);
+                // 路径过多被裁剪时提示用户（病态图才会触发，正常数仓不会）
+                if (result.paths_truncated) {
+                  message.warning("血缘路径较多，仅高亮部分链路（受路径数上限保护）");
+                }
               }).catch(() => {
                 if (myToken !== impactTokenRef.current || !mountedRef.current) return;
                 setImpactDownstreamEdges(new Set());

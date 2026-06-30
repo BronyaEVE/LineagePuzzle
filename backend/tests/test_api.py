@@ -512,14 +512,14 @@ class TestImpactAnalysis:
         assert "public.report" in data["upstream"]
 
     def test_impact_upstream_paths(self):
-        """后端返回 upstream_paths（P6 修复后端新增）"""
+        """后端返回 upstream_paths（全部路径，v2.3 改为 list[list[str]]）"""
         self._setup_chain()
         r = client.get("/api/impact-analysis/public.summary")
         data = r.json()
         assert "upstream_paths" in data
-        # orders → summary 的完整链路
+        # orders → summary 的完整链路（线性链只有一条路径，包在数组里）
         assert data["upstream_paths"]["public.orders"] == [
-            "public.orders", "public.tmp", "public.report", "public.summary",
+            ["public.orders", "public.tmp", "public.report", "public.summary"],
         ]
 
     def test_impact_nonexistent_table(self):

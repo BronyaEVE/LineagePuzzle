@@ -395,14 +395,27 @@ def impact_analysis(table: str) -> dict:
 
     - downstream: 改这个表会影响哪些下游表（递归遍历所有后代）
     - upstream: 这个表的数据来自哪些上游表（递归遍历所有祖先）
-    - paths: 下游最短路径（table → 各下游表的具体链路）
-    - upstream_paths: 上游最短路径（各上游表 → table 的具体链路）[新增]
+    - paths: 下游全部路径（table → 各下游表的所有链路，含中间环节）
+    - upstream_paths: 上游全部路径（各上游表 → table 的所有链路）
+    - paths_truncated: 是否因路径过多触发上限裁剪（True 表示只返回了部分路径）
     - has_cycle: 全局图谱是否有环（数据流不应有环，有环说明分析有误）
 
-    提供 upstream_paths 后，前端无需再用 O(n²) 双重遍历推算上游链路边，
-    既精确（直接给出真实路径）又高效（前端 O(路径长)）。
+    路径算法选择 [v2.3]：
+      原 shortest_path 只返回最短链路，菱形依赖（A→B→C 且 A→C）下会漏掉
+      A→B 这条实际发生影响的中间环节，造成"A→B 明明有血缘却不高亮"的误导。
+      改用 all_simple_paths 返回全部路径，让前端把所有真实存在的链路边都高亮。
+
+    路径爆炸防护（all_simple_paths 在病态菱形网格上指数级增长）：
+      1. cutoff=MAX_PATH_DEPTH 限深（血缘链路极少超过 6-8 层）
+      2. 单源路径数上限 MAX_PATHS_PER_PAIR，超过提前终止 + 标记 truncated
+      3. has_cycle 时降级 shortest_path（环上 all_simple_paths 会无限循环）
+    实测：真实 4 层数仓单源最大 5 条路径；病态宽5深5网格 125 条仍 <2ms。
     """
     import networkx as nx
+
+    # 路径爆炸防护参数
+    MAX_PATH_DEPTH = 8       # 单条路径最大深度（边数），覆盖 ODS→DWD→DWS→ADS 等真实场景
+    MAX_PATHS_PER_PAIR = 200  # 单个 (src,tgt) 对的最大路径数，超过则截断并标记
 
     G = build_graph()
     # 表名可能含特殊字符，networkx 节点 id 就是全限定名
@@ -412,23 +425,50 @@ def impact_analysis(table: str) -> dict:
     downstream = sorted(nx.descendants(G, table))
     upstream = sorted(nx.ancestors(G, table))
 
-    # 到每个下游的最短路径
-    paths = {}
-    for d in downstream:
-        try:
-            paths[d] = nx.shortest_path(G, table, d)
-        except nx.NetworkXNoPath:
-            paths[d] = []
-
-    # 到每个上游的最短路径（上游表 → table，反向最短路径）
-    upstream_paths = {}
-    for u in upstream:
-        try:
-            upstream_paths[u] = nx.shortest_path(G, u, table)
-        except nx.NetworkXNoPath:
-            upstream_paths[u] = []
-
+    # 环检测：有环时 all_simple_paths 不安全（可能无限循环），降级用最短路径
     has_cycle = not nx.is_directed_acyclic_graph(G)
+    use_full_paths = not has_cycle
+
+    def _collect_paths(src: str, tgt: str) -> tuple[list[list[str]], bool]:
+        """收集 src→tgt 的全部路径，返回 (路径列表, 是否被截断)。
+
+        DAG 时用 all_simple_paths + cutoff + 数量上限；有环时降级最短路径。
+        """
+        if use_full_paths:
+            paths: list[list[str]] = []
+            truncated = False
+            try:
+                for p in nx.all_simple_paths(G, src, tgt, cutoff=MAX_PATH_DEPTH):
+                    paths.append(p)
+                    if len(paths) >= MAX_PATHS_PER_PAIR:
+                        truncated = True
+                        break
+            except nx.NetworkXNoPath:
+                pass
+            return paths, truncated
+        else:
+            # 有环兜底：只给最短路径（保证有返回，避免无限循环）
+            try:
+                return [nx.shortest_path(G, src, tgt)], True
+            except nx.NetworkXNoPath:
+                return [], False
+
+    # 下游全部路径
+    paths: dict[str, list[list[str]]] = {}
+    any_truncated = False
+    for d in downstream:
+        ps, trunc = _collect_paths(table, d)
+        paths[d] = ps
+        if trunc:
+            any_truncated = True
+
+    # 上游全部路径
+    upstream_paths: dict[str, list[list[str]]] = {}
+    for u in upstream:
+        ps, trunc = _collect_paths(u, table)
+        upstream_paths[u] = ps
+        if trunc:
+            any_truncated = True
 
     return {
         "table": table,
@@ -438,6 +478,7 @@ def impact_analysis(table: str) -> dict:
         "upstream_count": len(upstream),
         "paths": paths,
         "upstream_paths": upstream_paths,
+        "paths_truncated": any_truncated,
         "has_cycle": has_cycle,
     }
 

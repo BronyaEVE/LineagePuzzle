@@ -151,8 +151,11 @@ export interface ImpactAnalysis {
   upstream: string[];
   downstream_count: number;
   upstream_count: number;
-  paths: Record<string, string[]>;  // {下游表: [起点, ..., 终点]}
-  upstream_paths: Record<string, string[]>;  // {上游表: [起点, ..., table]}
+  // v2.3：返回全部路径（list[list[str]]），菱形依赖下会有多条平行路径。
+  // 旧版只返回最短路径会漏掉中间环节边（A→B→C 且 A→C 时漏 A→B）。
+  paths: Record<string, string[][]>;           // {下游表: [[路径1], [路径2], ...]}
+  upstream_paths: Record<string, string[][]>;  // {上游表: [[路径1], [路径2], ...]}
+  paths_truncated: boolean;  // 是否因路径过多触发上限裁剪（true 表示只返回了部分）
   has_cycle: boolean;
   error?: string;
 }
