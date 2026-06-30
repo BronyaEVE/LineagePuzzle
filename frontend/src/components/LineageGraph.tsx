@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useRef, useEffect } from "react";
 import {
   ReactFlow,
   Background,
@@ -191,6 +191,15 @@ const LineageGraph: React.FC<Props> = ({
   // 影响分析高亮的边 id 集合：downstream 橙色、upstream 青色（单击节点触发）
   const [impactDownstreamEdges, setImpactDownstreamEdges] = useState<Set<string>>(new Set());
   const [impactUpstreamEdges, setImpactUpstreamEdges] = useState<Set<string>>(new Set());
+  // 影响分析请求竞态防护：每次点击节点递增 token，只有最新请求的响应被采纳。
+  // 避免快速连点多个节点时，先返回的响应覆盖最终结果。
+  const impactTokenRef = useRef(0);
+  // 组件是否仍挂载，防止卸载后 setState（请求未完成就切走）
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const hasImpactHighlight = impactDownstreamEdges.size > 0 || impactUpstreamEdges.size > 0;
 
   // 当选中脚本时，使用脚本自己的 visualization；否则用全局图
@@ -270,69 +279,71 @@ const LineageGraph: React.FC<Props> = ({
   const [edges, setEdges, onEdgesChange] = useEdgesState(laidEdges);
 
   // 高亮逻辑：单边（点边）> 影响分析（上下游双色）> 语句级（点语句）> 脚本级 > 默认
+  //
+  // 关键：本 effect 直接以 laidEdges 为基底重算（而非读当前 state 的 eds），
+  // 且依赖 laidEdges。这样切换布局 / 展开节点导致 laidEdges 变化时，高亮会基于
+  // 新边重新应用，不会因「重置 effect(362) 覆盖高亮」而丢失（B5 修复）。
   React.useEffect(() => {
-    setEdges((eds) =>
-      eds.map((e) => {
-        // 最高优先级：点边单条高亮（用 edge.id 定位，避免同 seq 多边被误点亮）
-        if (selectedEdgeId !== null) {
-          const hl = e.id === selectedEdgeId;
+    setEdges(laidEdges.map((e) => {
+      // 最高优先级：点边单条高亮（用 edge.id 定位，避免同 seq 多边被误点亮）
+      if (selectedEdgeId !== null) {
+        const hl = e.id === selectedEdgeId;
+        return {
+          ...e, animated: hl,
+          style: { ...e.style, stroke: hl ? "#1890ff" : "#d9d9d9", strokeWidth: hl ? 3 : 1.5 },
+          labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#999" },
+        };
+      }
+      // 影响分析高亮：下游橙 #fa8c16，上游青 #13c2c2，无关边灰
+      if (hasImpactHighlight) {
+        const isDown = impactDownstreamEdges.has(e.id);
+        const isUp = impactUpstreamEdges.has(e.id);
+        if (isDown) {
           return {
-            ...e, animated: hl,
-            style: { ...e.style, stroke: hl ? "#1890ff" : "#d9d9d9", strokeWidth: hl ? 3 : 1.5 },
-            labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#999" },
+            ...e, animated: true,
+            style: { ...e.style, stroke: "#fa8c16", strokeWidth: 3 },
+            labelStyle: { ...e.labelStyle, fill: "#fa8c16" },
           };
         }
-        // 影响分析高亮：下游橙 #fa8c16，上游青 #13c2c2，无关边灰
-        if (hasImpactHighlight) {
-          const isDown = impactDownstreamEdges.has(e.id);
-          const isUp = impactUpstreamEdges.has(e.id);
-          if (isDown) {
-            return {
-              ...e, animated: true,
-              style: { ...e.style, stroke: "#fa8c16", strokeWidth: 3 },
-              labelStyle: { ...e.labelStyle, fill: "#fa8c16" },
-            };
-          }
-          if (isUp) {
-            return {
-              ...e, animated: true,
-              style: { ...e.style, stroke: "#13c2c2", strokeWidth: 3 },
-              labelStyle: { ...e.labelStyle, fill: "#13c2c2" },
-            };
-          }
-          // 无关边：灰、不流动
+        if (isUp) {
           return {
-            ...e, animated: false,
-            style: { ...e.style, stroke: "#d9d9d9", strokeWidth: 1 },
-            labelStyle: { ...e.labelStyle, fill: "#bbb" },
+            ...e, animated: true,
+            style: { ...e.style, stroke: "#13c2c2", strokeWidth: 3 },
+            labelStyle: { ...e.labelStyle, fill: "#13c2c2" },
           };
         }
-        // 语句级别高亮（右栏点语句：该 seq 的所有边，多条是期望行为）
-        if (highlightSeq !== null) {
-          const seq = e.data?.statement_seq;
-          const hl = seq === highlightSeq;
-          return {
-            ...e, animated: hl,
-            style: { ...e.style, stroke: hl ? "#1890ff" : "#d9d9d9", strokeWidth: hl ? 3 : 1.5 },
-            labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#999" },
-          };
-        }
-        // 全局图：选中脚本时高亮该脚本（script_id）的边，其他灰
-        if (highlightScriptId !== null) {
-          const sid = (e.data as { script_id?: string } | undefined)?.script_id;
-          const hl = sid === highlightScriptId;
-          return {
-            ...e, animated: hl,
-            style: { ...e.style, stroke: hl ? "#1890ff" : "#d9d9d9", strokeWidth: hl ? 2.5 : 1 },
-            labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#bbb" },
-          };
-        }
-        // 默认：全部正常显示（恢复流动动画，和初始化状态一致）
-        return { ...e, animated: true, style: { ...e.style, stroke: "#8c8c8c", strokeWidth: 2 },
-          labelStyle: { ...e.labelStyle, fill: "#333" } };
-      })
-    );
-  }, [highlightSeq, highlightScriptId, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, setEdges]);
+        // 无关边：灰、不流动
+        return {
+          ...e, animated: false,
+          style: { ...e.style, stroke: "#d9d9d9", strokeWidth: 1 },
+          labelStyle: { ...e.labelStyle, fill: "#bbb" },
+        };
+      }
+      // 语句级别高亮（右栏点语句：该 seq 的所有边，多条是期望行为）
+      if (highlightSeq !== null) {
+        const seq = e.data?.statement_seq;
+        const hl = seq === highlightSeq;
+        return {
+          ...e, animated: hl,
+          style: { ...e.style, stroke: hl ? "#1890ff" : "#d9d9d9", strokeWidth: hl ? 3 : 1.5 },
+          labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#999" },
+        };
+      }
+      // 全局图：选中脚本时高亮该脚本（script_id）的边，其他灰
+      if (highlightScriptId !== null) {
+        const sid = (e.data as { script_id?: string } | undefined)?.script_id;
+        const hl = sid === highlightScriptId;
+        return {
+          ...e, animated: hl,
+          style: { ...e.style, stroke: hl ? "#1890ff" : "#d9d9d9", strokeWidth: hl ? 2.5 : 1 },
+          labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#bbb" },
+        };
+      }
+      // 默认：全部正常显示（恢复流动动画，和初始化状态一致）
+      return { ...e, animated: true, style: { ...e.style, stroke: "#8c8c8c", strokeWidth: 2 },
+        labelStyle: { ...e.labelStyle, fill: "#333" } };
+    }));
+  }, [laidEdges, highlightSeq, highlightScriptId, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, setEdges]);
 
   // 搜索选中后聚焦+高亮（由 App 的 focusTarget 驱动）
   React.useEffect(() => {
@@ -359,10 +370,11 @@ const LineageGraph: React.FC<Props> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusTarget]);
 
+  // 节点布局变化时同步（边由上面的高亮 effect 基于 laidEdges 统一接管，
+  // 这里只更新节点，避免两个 effect 互相覆盖边样式导致高亮丢失）。
   React.useEffect(() => {
     setNodes(laidNodes);
-    setEdges(laidEdges);
-  }, [laidNodes, laidEdges, setNodes, setEdges]);
+  }, [laidNodes, setNodes]);
 
   const hasData = laidNodes.length > 0;
   const isScriptView = !!highlightScriptId && !!visualization?.nodes.length;
@@ -479,51 +491,55 @@ const LineageGraph: React.FC<Props> = ({
                 setExpandedNodeId(null);
                 setImpactDownstreamEdges(new Set());
                 setImpactUpstreamEdges(new Set());
+                impactTokenRef.current++; // 作废可能还在途的请求
                 return;
               }
               // 展开表名
               setExpandedNodeId(node.id);
               // 触发影响分析（脚本视图下先切回全局图）
               if (onImpactTrigger) onImpactTrigger();
-              // 调 API + 计算 edge id 高亮集合
+              // 竞态防护：本次点击的 token，响应回来时校验是否仍是最新点击
+              const myToken = ++impactTokenRef.current;
+              // 把路径数组展开成边 id 集合的工具
+              const buildEdgeSet = (
+                pathsArr: Record<string, string[]>,
+                edgeIndex: Map<string, string>,
+              ): Set<string> => {
+                const ids = new Set<string>();
+                for (const path of Object.values(pathsArr)) {
+                  for (let i = 0; i < path.length - 1; i++) {
+                    const eid = edgeIndex.get(`${path[i]}→${path[i + 1]}`);
+                    if (eid) ids.add(eid);
+                  }
+                }
+                return ids;
+              };
               fetchImpactAnalysis(node.id).then((result) => {
+                // 过期响应（用户又点了别的节点）或组件已卸载 → 丢弃
+                if (myToken !== impactTokenRef.current || !mountedRef.current) return;
                 if (result.error || (!result.downstream.length && !result.upstream.length)) {
                   setImpactDownstreamEdges(new Set());
                   setImpactUpstreamEdges(new Set());
                   return;
                 }
-                // 建 (src→tgt) → edgeId 索引（全局图边 id 是 ge-${i}）
+                // 建 (src→tgt) → edgeId 索引。
+                // 边 id 前缀随视图不同：全局图 ge-${i}，脚本视图 e-${i}。
+                // 用当前实际渲染的边建索引，保证高亮 id 与渲染边 id 一致。
                 const edgeIndex = new Map<string, string>();
-                const sourceEdges = globalGraph?.edges || [];
-                sourceEdges.forEach((e, i) => {
-                  edgeIndex.set(`${e.source}→${e.target}`, `ge-${i}`);
+                edges.forEach((e) => {
+                  edgeIndex.set(`${e.source}→${e.target}`, e.id);
                 });
-                // 下游 paths 展开成边 id 集合
-                const downIds = new Set<string>();
-                for (const path of Object.values(result.paths)) {
-                  for (let i = 0; i < path.length - 1; i++) {
-                    const eid = edgeIndex.get(`${path[i]}→${path[i + 1]}`);
-                    if (eid) downIds.add(eid);
-                  }
-                }
-                // 上游：反查 upstream 表到当前表的路径（API 没返回 upstream paths，
-                // 用 ancestors + 逐对查边）
-                const upIds = new Set<string>();
-                for (const upTable of result.upstream) {
-                  // 对每个上游表，查找它的边是否指向当前表或另一个上游表（简化：直接查所有 upstream→当前方向）
-                  // 实际：上游边 = 所有 source 在 upstream 集合、target 也在 upstream+当前表集合 的边
-                  if (edgeIndex.has(`${upTable}→${node.id}`)) {
-                    upIds.add(edgeIndex.get(`${upTable}→${node.id}`)!);
-                  }
-                  // 中间上游链路（upstream 表之间的边）
-                  for (const otherUp of result.upstream) {
-                    const eid = edgeIndex.get(`${upTable}→${otherUp}`);
-                    if (eid) upIds.add(eid);
-                  }
-                }
+                // 下游路径 → 边 id 集合（橙色）
+                const downIds = buildEdgeSet(result.paths, edgeIndex);
+                // 上游路径 → 边 id 集合（青色）。用后端返回的 upstream_paths，
+                // 精确给出「上游表 → 当前表」的真实链路，无需前端 O(n²) 推算。
+                const upIds = result.upstream_paths
+                  ? buildEdgeSet(result.upstream_paths, edgeIndex)
+                  : new Set<string>();
                 setImpactDownstreamEdges(downIds);
                 setImpactUpstreamEdges(upIds);
               }).catch(() => {
+                if (myToken !== impactTokenRef.current || !mountedRef.current) return;
                 setImpactDownstreamEdges(new Set());
                 setImpactUpstreamEdges(new Set());
               });

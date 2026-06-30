@@ -157,10 +157,15 @@ ETL 脚本常用 `${icl_schema}`、`${batch_date}` 等模板占位符，sqlglot 
 | JOIN + 别名 `o.id, c.name` | ✅ 解析到各自物理表 |
 | 表达式 `price*qty` | ✅ 多源列 + transform |
 | 聚合 `SUM(x)` | ✅ 源列 + transform |
-| CTAS / 子查询 | ✅ 支持 |
+| CTAS | ✅ 支持 |
 | UPDATE SET | ✅ 左=目标列，右表达式找源列 |
 | 单表无别名 `SELECT x FROM src` | ✅ 回退到唯一源表 |
+| 派生表穿透 `FROM (SELECT...) sub` | ✅ 列穿透到物理表 [v2.2] |
+| 嵌套子查询 `FROM (SELECT...FROM (...))` | ✅ 递归穿透到最底层 [v2.2] |
+| JOIN + 子查询混合 | ✅ 各列穿透到正确物理表 [v2.2] |
 | `SELECT *` | ⚠️ 降级为空（表级边保底） |
+
+> **派生表穿透说明 [v2.2]**：外层 SELECT 引用派生表输出列时，递归解析派生表内部的 projection，追溯到物理源表。派生表内由聚合/常量产生的列（如 `COUNT(*) AS cnt`）无物理源，不杜撰源列——此行为经与 sqllineage 1.5.8 一致性验证。
 
 ### 3.5 DML 表级血缘提取规则
 
@@ -368,7 +373,7 @@ ctl.sh start    # 前端 vite dev :5173 + 后端 uvicorn :8000
 | 预处理（含参数替换） | ~10 |
 | 语句拆分 | ~12 |
 | AST 表级血缘 | ~20 |
-| 列级血缘 | 15 |
+| 列级血缘 | 18 |
 | DB 校验 | ~6 |
 | Store 持久化（含孤立表全表扫清理、JSONL、script_ids、并发） | ~35 |
 | 参数映射 | 19 |

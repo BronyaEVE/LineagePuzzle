@@ -100,7 +100,7 @@ class TestCtasAndSubquery:
         assert by_tgt["b"].source_table == "public.src"
 
     def test_subquery(self):
-        """子查询 → 能解析子查询输出的列"""
+        """子查询 → 列穿透到物理表 [v2.2 穿透]"""
         stmt = _stmt(1, StatementType.INSERT,
                      "INSERT INTO dest (cust_id, cnt) "
                      "SELECT customer_id, cnt FROM ("
@@ -108,11 +108,58 @@ class TestCtasAndSubquery:
                      ") sub")
         mappings = extract_column_mappings(stmt)
 
-        # 子查询外层 projection 是 customer_id, cnt
-        # 这两个列来自 sub（子查询别名），解析到 orders 或留空
-        assert len(mappings) >= 1
         by_tgt = {m.target_column: m for m in mappings}
-        assert "cust_id" in by_tgt
+        # customer_id 穿透派生表到物理表 orders
+        assert by_tgt["cust_id"].source_table == "public.orders"
+        assert by_tgt["cust_id"].source_columns == ["customer_id"]
+        # cnt 来自 COUNT(*)，派生表内无物理源列 → 不产生带源的映射
+        # （有意识的设计：聚合产生的列不杜撰源列）
+        assert "cnt" not in by_tgt or by_tgt["cnt"].source_columns == []
+
+    def test_nested_subquery_passthrough(self):
+        """嵌套两层子查询 → 穿透到最底层物理表 [v2.2]"""
+        stmt = _stmt(1, StatementType.INSERT,
+                     "INSERT INTO t (a) SELECT x FROM ("
+                     "  SELECT x FROM (SELECT x FROM orders) d2"
+                     ") d1")
+        mappings = extract_column_mappings(stmt)
+
+        assert len(mappings) == 1
+        m = mappings[0]
+        assert m.target_column == "a"
+        assert m.source_table == "public.orders"
+        assert m.source_columns == ["x"]
+
+    def test_join_with_subquery(self):
+        """JOIN + 子查询混合 → 各列穿透到正确物理表 [v2.2]"""
+        stmt = _stmt(1, StatementType.INSERT,
+                     "INSERT INTO rep (oid, cname) "
+                     "SELECT s.oid, c.name FROM ("
+                     "  SELECT oid, cust_id FROM orders"
+                     ") s JOIN customers c ON s.cust_id = c.id")
+        mappings = extract_column_mappings(stmt)
+
+        by_tgt = {m.target_column: m for m in mappings}
+        # s.oid 穿透派生表 s → orders.oid
+        assert by_tgt["oid"].source_table == "public.orders"
+        assert by_tgt["oid"].source_columns == ["oid"]
+        # c.name 直接来自物理表 customers
+        assert by_tgt["cname"].source_table == "public.customers"
+        assert by_tgt["cname"].source_columns == ["name"]
+
+    def test_subquery_expression_passthrough(self):
+        """派生表内表达式 → 穿透表达式提取源列 [v2.2]"""
+        stmt = _stmt(1, StatementType.INSERT,
+                     "INSERT INTO calc (gross) SELECT gross FROM ("
+                     "  SELECT price * qty AS gross FROM sales"
+                     ") sub")
+        mappings = extract_column_mappings(stmt)
+
+        assert len(mappings) == 1
+        m = mappings[0]
+        assert m.target_column == "gross"
+        assert m.source_table == "public.sales"
+        assert set(m.source_columns) == {"price", "qty"}
 
 
 class TestDegradation:

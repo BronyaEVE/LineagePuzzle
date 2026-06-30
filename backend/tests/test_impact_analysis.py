@@ -104,6 +104,23 @@ class TestImpactAnalysis:
         path = result["paths"]["public.daily_summary"]
         assert path == ["public.orders", "public.tmp_detail", "public.order_report", "public.daily_summary"]
 
+    def test_upstream_paths(self):
+        """daily_summary 的上游链路：每个上游表 → daily_summary 的最短路径
+
+        后端新增 upstream_paths 后，前端无需 O(n²) 推算上游边，直接用路径展开。
+        """
+        self.setup_chain()
+        result = store.impact_analysis("public.daily_summary")
+        up_paths = result["upstream_paths"]
+        # 直接上游 order_report 到 daily_summary 的路径
+        assert up_paths["public.order_report"] == ["public.order_report", "public.daily_summary"]
+        # 最远上游 orders 的路径应贯穿整条链
+        assert up_paths["public.orders"] == [
+            "public.orders", "public.tmp_detail", "public.order_report", "public.daily_summary",
+        ]
+        # 所有上游表都在 upstream_paths 里有对应路径
+        assert set(up_paths.keys()) == set(result["upstream"])
+
     def test_no_cycle(self):
         """正常血缘图没有环"""
         self.setup_chain()

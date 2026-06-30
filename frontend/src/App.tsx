@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { ConfigProvider, Layout, Button, Modal, message, Tag, Space, Popconfirm } from "antd";
 import { PlusOutlined, SettingOutlined, DownloadOutlined, UploadOutlined } from "@ant-design/icons";
 import ScriptList from "./components/ScriptList";
@@ -20,6 +20,11 @@ import type {
 } from "./types";
 
 const { Header, Content } = Layout;
+
+/** 从 catch 块的 unknown 值安全提取错误消息，兜底返回默认文案。 */
+function errMsg(e: unknown, fallback: string): string {
+  return e instanceof Error ? (e.message || fallback) : fallback;
+}
 
 function App() {
   // === 状态 ===
@@ -49,22 +54,42 @@ function App() {
 
   // === 加载数据 ===
   const refreshAll = useCallback(async () => {
-    const [s, g] = await Promise.all([listScripts(), getGlobalGraph()]);
-    setScripts(s);
-    setGlobalGraph(g);
+    try {
+      const [s, g] = await Promise.all([listScripts(), getGlobalGraph()]);
+      setScripts(s);
+      setGlobalGraph(g);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "加载数据失败";
+      message.error(msg);
+    }
   }, []);
 
   useEffect(() => { refreshAll(); }, [refreshAll]);
+
+  // 选中脚本的请求竞态防护：每次点击递增 token，只有最新请求的响应会被采纳
+  const selectTokenRef = useRef(0);
 
   // === 选中脚本 ===
   const handleSelectScript = useCallback(async (id: string | null) => {
     setSelectedScriptId(id);
     setHighlightSeq(null);
-    if (id) {
+    // 立即清空旧结果，避免切换过程中显示上一个脚本的数据（视觉错乱）
+    setSelectedResult(null);
+    if (!id) {
+      return;
+    }
+    const myToken = ++selectTokenRef.current;
+    try {
       const result = await getScript(id);
+      // 过期响应丢弃：用户可能已点了另一个脚本
+      if (myToken !== selectTokenRef.current) return;
       setSelectedResult(result);
-    } else {
-      setSelectedResult(null);
+    } catch (e: unknown) {
+      if (myToken !== selectTokenRef.current) return;
+      const msg = e instanceof Error ? e.message : "加载脚本失败";
+      message.error(msg);
+      // 加载失败，回滚选中状态
+      setSelectedScriptId(null);
     }
   }, []);
 
@@ -87,8 +112,8 @@ function App() {
       setScript("");
       setModalOpen(false);
       await refreshAll();
-    } catch (e: any) {
-      message.error(e.message || "分析失败");
+    } catch (e: unknown) {
+      message.error(errMsg(e, "分析失败"));
     } finally {
       setLoading(false);
     }
@@ -104,8 +129,8 @@ function App() {
         setSelectedResult(null);
       }
       await refreshAll();
-    } catch (e: any) {
-      message.error(e.message);
+    } catch (e: unknown) {
+      message.error(errMsg(e, "删除脚本失败"));
     }
   };
 
@@ -114,8 +139,8 @@ function App() {
     try {
       await renameScript(id, name);
       await refreshAll();
-    } catch (e: any) {
-      message.error(e.message);
+    } catch (e: unknown) {
+      message.error(errMsg(e, "重命名失败"));
     }
   };
 
@@ -125,8 +150,8 @@ function App() {
     try {
       const mapping = await getParamMapping();
       setParamMappingDraft(mapping);
-    } catch (e: any) {
-      message.error(e.message || "获取参数映射失败");
+    } catch (e: unknown) {
+      message.error(errMsg(e, "获取参数映射失败"));
     }
   };
 
@@ -139,8 +164,8 @@ function App() {
         duration: 5,
       });
       setParamModalOpen(false);
-    } catch (e: any) {
-      message.error(e.message || "保存参数映射失败");
+    } catch (e: unknown) {
+      message.error(errMsg(e, "保存参数映射失败"));
     } finally {
       setParamLoading(false);
     }
@@ -159,8 +184,8 @@ function App() {
       a.click();
       URL.revokeObjectURL(url);
       message.success("导出成功");
-    } catch (e: any) {
-      message.error(e.message || "导出失败");
+    } catch (e: unknown) {
+      message.error(errMsg(e, "导出失败"));
     }
   };
 
@@ -171,8 +196,8 @@ function App() {
       await importData(payload);
       message.success("导入成功，数据已覆盖");
       await refreshAll();
-    } catch (e: any) {
-      message.error(e.message || "导入失败，请检查文件格式");
+    } catch (e: unknown) {
+      message.error(errMsg(e, "导入失败，请检查文件格式"));
     }
   };
 
@@ -180,6 +205,20 @@ function App() {
   const tableCount = globalGraph?.nodes.length ?? 0;
   const edgeCount = globalGraph?.edges.length ?? 0;
   const scriptCount = scripts.length;
+
+  // 搜索框的节点/边数据（useMemo 化，避免每次渲染重建数组击穿 SearchBox 内部 useMemo）。
+  // 边加 _edgeId 前缀（e- 脚本视图 / ge- 全局视图），与 LineageGraph 实际渲染的边 id 一致。
+  const searchNodes = useMemo(
+    () => (selectedScriptId ? selectedResult?.visualization.nodes : globalGraph?.nodes) || [],
+    [selectedScriptId, selectedResult, globalGraph],
+  );
+  const searchEdges = useMemo(
+    () =>
+      (selectedScriptId
+        ? selectedResult?.visualization.edges?.map((e, i) => ({ ...e, _edgeId: `e-${i}` }))
+        : globalGraph?.edges?.map((e, i) => ({ ...e, _edgeId: `ge-${i}` }))) || [],
+    [selectedScriptId, selectedResult, globalGraph],
+  );
 
   return (
     <ConfigProvider theme={{ token: { colorPrimary: "#1890ff" } }}>
@@ -226,17 +265,10 @@ function App() {
               }}
             />
             <SearchBox
-              nodes={(selectedScriptId ? selectedResult?.visualization.nodes : globalGraph?.nodes) || []}
-              edges={
-                (selectedScriptId
-                  ? selectedResult?.visualization.edges?.map((e, i) => ({ ...e, _edgeId: `e-${i}` }))
-                  : globalGraph?.edges?.map((e, i) => ({ ...e, _edgeId: `ge-${i}` }))) || []
-              }
+              nodes={searchNodes}
+              edges={searchEdges}
               onSelectTarget={(t: SearchTarget) => {
-                // 边的 id 在不同视图前缀不同（e- vs ge-），SearchTarget.id 来自 SearchBox 的 _edgeId
                 setFocusTarget(t);
-                // node 类型切换为全局图模式（清脚本选中）以便在全局图里聚焦
-                // 实际聚焦由 LineageGraph 内部 fitView 完成
               }}
             />
             <Button
@@ -278,7 +310,7 @@ function App() {
                 highlightSeq={highlightSeq}
                 onEdgeSelectSeq={setHighlightSeq}
                 focusTarget={focusTarget}
-                onImpactTrigger={() => setSelectedScriptId(null)}
+                onImpactTrigger={() => handleSelectScript(null)}
               />
             </div>
 

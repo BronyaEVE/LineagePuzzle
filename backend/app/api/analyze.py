@@ -34,7 +34,10 @@ async def list_scripts():
 @router.get("/scripts/{script_id}", response_model=AnalysisResult)
 async def get_script(script_id: str):
     """获取单个脚本的完整分析结果。"""
-    result = store.get_script(script_id)
+    try:
+        result = store.get_script(script_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not result:
         raise HTTPException(status_code=404, detail="脚本不存在")
     return result
@@ -43,7 +46,11 @@ async def get_script(script_id: str):
 @router.delete("/scripts/{script_id}")
 async def delete_script(script_id: str):
     """删除脚本及其关联的全局边。"""
-    if not store.delete_script(script_id):
+    try:
+        deleted = store.delete_script(script_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not deleted:
         raise HTTPException(status_code=404, detail="脚本不存在")
     return {"status": "deleted"}
 
@@ -51,7 +58,10 @@ async def delete_script(script_id: str):
 @router.put("/scripts/{script_id}/name")
 async def rename_script(script_id: str, name: str = ""):
     """重命名脚本。"""
-    result = store.update_script_name(script_id, name)
+    try:
+        result = store.update_script_name(script_id, name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not result:
         raise HTTPException(status_code=404, detail="脚本不存在")
     return {"status": "renamed", "name": name}
@@ -71,7 +81,10 @@ async def get_statements(script_id: str):
 @router.put("/scripts/{script_id}/statements/{seq}", response_model=AnalysisResult)
 async def correct_statement(script_id: str, seq: int, request: CorrectStatementRequest):
     """修正语句解析结果并重新生成血缘。"""
-    result = store.get_script(script_id)
+    try:
+        result = store.get_script(script_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not result:
         raise HTTPException(status_code=404, detail="脚本不存在")
     if not result.statement_group:

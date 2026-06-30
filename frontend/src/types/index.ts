@@ -111,7 +111,7 @@ export interface AnalysisResult {
   lineages: Lineage[];
   visualization: Visualization;
   // DESIGN.v2 §4.3：ast_only | ast_with_db_validation
-  extraction_mode: string;
+  extraction_mode: "ast_only" | "ast_with_db_validation";
 }
 
 // === 脚本管理 ===
@@ -152,6 +152,7 @@ export interface ImpactAnalysis {
   downstream_count: number;
   upstream_count: number;
   paths: Record<string, string[]>;  // {下游表: [起点, ..., 终点]}
+  upstream_paths: Record<string, string[]>;  // {上游表: [起点, ..., table]}
   has_cycle: boolean;
   error?: string;
 }

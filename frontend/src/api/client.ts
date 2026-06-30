@@ -1,122 +1,113 @@
 import type {
-  AnalysisResult, AnalyzeRequest, CorrectStatementRequest,
-  ScriptSummary, GlobalGraph, StatementGroup, ImpactAnalysis,
+  AnalysisResult, AnalyzeRequest,
+  ScriptSummary, GlobalGraph, ImpactAnalysis,
 } from "../types";
 
 const API_BASE = "/api";
 
+// 默认请求超时（ms）。后端卡住时前端不会永久 pending，超时后抛错让调用方提示用户。
+const DEFAULT_TIMEOUT = 15000;
+
+/**
+ * 统一的 fetch 封装：带超时 + 统一错误信息解析。
+ *
+ * - 超时：通过 AbortController 实现，到期中断请求。
+ * - 错误：解析后端返回的 {detail: "..."}（FastAPI HTTPException 格式），
+ *   提取具体原因而非泛化提示。S1 修复后 script_id 非法会返回 400+detail。
+ * - signal：可选，调用方可传入自己的 AbortSignal（如页面切换时取消请求）。
+ */
+async function request<T>(
+  url: string,
+  options: RequestInit & { timeout?: number } = {},
+): Promise<T> {
+  const { timeout = DEFAULT_TIMEOUT, ...init } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `请求失败（${res.status}）`);
+    }
+    // 无响应体的请求（DELETE 等）
+    const text = await res.text();
+    return (text ? JSON.parse(text) : undefined) as T;
+  } catch (e: unknown) {
+    if (e instanceof Error && e.name === "AbortError") {
+      throw new Error("请求超时，请稍后重试");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // === 分析 ===
 
-export async function submitAnalysis(request: AnalyzeRequest): Promise<AnalysisResult> {
-  const res = await fetch(`${API_BASE}/analyze`, {
+export async function submitAnalysis(payload: AnalyzeRequest): Promise<AnalysisResult> {
+  return request<AnalysisResult>(`${API_BASE}/analyze`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(request),
+    body: JSON.stringify(payload),
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || "分析失败");
-  }
-  return res.json();
 }
 
 // === 脚本管理 ===
 
 export async function listScripts(): Promise<ScriptSummary[]> {
-  const res = await fetch(`${API_BASE}/scripts`);
-  if (!res.ok) throw new Error("获取脚本列表失败");
-  return res.json();
+  return request<ScriptSummary[]>(`${API_BASE}/scripts`);
 }
 
 export async function getScript(id: string): Promise<AnalysisResult> {
-  const res = await fetch(`${API_BASE}/scripts/${id}`);
-  if (!res.ok) throw new Error("获取脚本详情失败");
-  return res.json();
+  return request<AnalysisResult>(`${API_BASE}/scripts/${id}`);
 }
 
 export async function deleteScript(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/scripts/${id}`, { method: "DELETE" });
-  if (!res.ok) throw new Error("删除失败");
+  await request<void>(`${API_BASE}/scripts/${id}`, { method: "DELETE" });
 }
 
 export async function renameScript(id: string, name: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/scripts/${id}/name?name=${encodeURIComponent(name)}`, {
+  await request<void>(`${API_BASE}/scripts/${id}/name?name=${encodeURIComponent(name)}`, {
     method: "PUT",
   });
-  if (!res.ok) throw new Error("重命名失败");
-}
-
-export async function getStatements(scriptId: string): Promise<StatementGroup> {
-  const res = await fetch(`${API_BASE}/scripts/${scriptId}/statements`);
-  if (!res.ok) throw new Error("获取语句分段失败");
-  return res.json();
-}
-
-export async function correctStatement(
-  scriptId: string, seq: number, request: CorrectStatementRequest
-): Promise<AnalysisResult> {
-  const res = await fetch(`${API_BASE}/scripts/${scriptId}/statements/${seq}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(request),
-  });
-  if (!res.ok) throw new Error("修正失败");
-  return res.json();
 }
 
 // === 全局图谱 ===
 
 export async function getGlobalGraph(): Promise<GlobalGraph> {
-  const res = await fetch(`${API_BASE}/global-graph`);
-  if (!res.ok) throw new Error("获取全局图谱失败");
-  return res.json();
-}
-
-export async function getTables(): Promise<Record<string, any>> {
-  const res = await fetch(`${API_BASE}/tables`);
-  if (!res.ok) throw new Error("获取表列表失败");
-  return res.json();
+  return request<GlobalGraph>(`${API_BASE}/global-graph`);
 }
 
 // === 参数映射 ===
 
 export async function getParamMapping(): Promise<Record<string, string>> {
-  const res = await fetch(`${API_BASE}/param-mapping`);
-  if (!res.ok) throw new Error("获取参数映射失败");
-  return res.json();
+  return request<Record<string, string>>(`${API_BASE}/param-mapping`);
 }
 
 export async function setParamMapping(mapping: Record<string, string>): Promise<Record<string, string>> {
-  const res = await fetch(`${API_BASE}/param-mapping`, {
+  return request<Record<string, string>>(`${API_BASE}/param-mapping`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(mapping),
   });
-  if (!res.ok) throw new Error("保存参数映射失败");
-  return res.json();
 }
 
 // === 导入导出 ===
 
-export async function exportData(): Promise<Record<string, any>> {
-  const res = await fetch(`${API_BASE}/export`);
-  if (!res.ok) throw new Error("导出失败");
-  return res.json();
+export async function exportData(): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>(`${API_BASE}/export`);
 }
 
-export async function importData(payload: Record<string, any>): Promise<void> {
-  const res = await fetch(`${API_BASE}/import`, {
+export async function importData(payload: Record<string, unknown>): Promise<void> {
+  await request<void>(`${API_BASE}/import`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error("导入失败");
 }
 
 // === 影响分析 ===
 
 export async function impactAnalysis(table: string): Promise<ImpactAnalysis> {
-  const res = await fetch(`${API_BASE}/impact-analysis/${encodeURIComponent(table)}`);
-  if (!res.ok) throw new Error("影响分析失败");
-  return res.json();
+  return request<ImpactAnalysis>(`${API_BASE}/impact-analysis/${encodeURIComponent(table)}`);
 }

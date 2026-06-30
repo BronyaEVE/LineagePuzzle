@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -30,6 +31,21 @@ SCRIPTS_DIR = DATA_DIR / "scripts"
 LOCK_FILE = DATA_DIR / "store.lock"
 # 全局参数映射表：${param} → 实际值，分析时用于替换 SQL 里的占位符
 PARAM_MAPPING_FILE = DATA_DIR / "param_mapping.json"
+
+# script_id 合法字符集：字母数字、下划线、连字符（analysis_id 是 uuid4，必然匹配）。
+# 用严格正则防止路径遍历（../、绝对路径、盘符等都会被拒绝）。
+_SCRIPT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_script_id(script_id: str) -> None:
+    """校验 script_id，防止路径遍历攻击。
+
+    script_id 直接拼进文件路径（SCRIPTS_DIR / f'{script_id}.json'），
+    若含 ../ 或路径分隔符会逃逸 SCRIPTS_DIR，导致读/删任意文件。
+    合法 script_id 是 uuid4（仅含十六进制和连字符），此处用白名单正则严格限制。
+    """
+    if not script_id or not _SCRIPT_ID_RE.fullmatch(script_id):
+        raise ValueError(f"非法 script_id: {script_id!r}")
 
 
 def _ensure_dirs():
@@ -160,6 +176,7 @@ def list_scripts() -> list[ScriptSummary]:
 
 def get_script(script_id: str) -> AnalysisResult | None:
     """读取单个脚本的完整分析结果。"""
+    _validate_script_id(script_id)
     path = SCRIPTS_DIR / f"{script_id}.json"
     if not path.exists():
         return None
@@ -178,6 +195,7 @@ def delete_script(script_id: str) -> bool:
     注意：步骤 3 必须全表扫（不能只看 edges 涉及的表），因为表可能从
     database_info 或无源表 lineage 登记进 tables.json 但不在 edges 里。
     """
+    _validate_script_id(script_id)
     with _store_lock():
         path = SCRIPTS_DIR / f"{script_id}.json"
         if not path.exists():
@@ -197,6 +215,7 @@ def delete_script(script_id: str) -> bool:
 
 def update_script_name(script_id: str, name: str) -> AnalysisResult | None:
     """重命名脚本（只改 scripts/{id}.json，不影响全局表/边）。"""
+    _validate_script_id(script_id)
     with _store_lock():
         result = get_script(script_id)
         if not result:
@@ -218,6 +237,7 @@ def replace_script_edges(result: AnalysisResult) -> AnalysisResult:
     再保存新结果。
     """
     script_id = result.analysis_id
+    _validate_script_id(script_id)
     with _store_lock():
         # 1. 删旧边
         _remove_edges_for_script(script_id)
@@ -376,7 +396,11 @@ def impact_analysis(table: str) -> dict:
     - downstream: 改这个表会影响哪些下游表（递归遍历所有后代）
     - upstream: 这个表的数据来自哪些上游表（递归遍历所有祖先）
     - paths: 下游最短路径（table → 各下游表的具体链路）
+    - upstream_paths: 上游最短路径（各上游表 → table 的具体链路）[新增]
     - has_cycle: 全局图谱是否有环（数据流不应有环，有环说明分析有误）
+
+    提供 upstream_paths 后，前端无需再用 O(n²) 双重遍历推算上游链路边，
+    既精确（直接给出真实路径）又高效（前端 O(路径长)）。
     """
     import networkx as nx
 
@@ -396,6 +420,14 @@ def impact_analysis(table: str) -> dict:
         except nx.NetworkXNoPath:
             paths[d] = []
 
+    # 到每个上游的最短路径（上游表 → table，反向最短路径）
+    upstream_paths = {}
+    for u in upstream:
+        try:
+            upstream_paths[u] = nx.shortest_path(G, u, table)
+        except nx.NetworkXNoPath:
+            upstream_paths[u] = []
+
     has_cycle = not nx.is_directed_acyclic_graph(G)
 
     return {
@@ -405,6 +437,7 @@ def impact_analysis(table: str) -> dict:
         "downstream_count": len(downstream),
         "upstream_count": len(upstream),
         "paths": paths,
+        "upstream_paths": upstream_paths,
         "has_cycle": has_cycle,
     }
 
