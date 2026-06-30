@@ -427,7 +427,9 @@ docker exec -i lineage-pg psql -U postgres < backend/tests/init_test_tables.sql
 
 ### 9.4 便携版（绿色包，零安装）
 
-用 `pack_portable.bat`（开发机执行）生成 `dist-portable/`：
+**普通用户**：直接从 [GitHub Releases](../..//releases/latest) 下载 `LineagePuzzle-vX.Y.Z-portable.zip`，解压后双击 `run.bat` 即可，**无需自己打包**。
+
+**开发者**（需要在本地构建最新版）：用 `pack_portable.bat`（必须在**有网**的开发机执行，会从镜像下载嵌入式 Python + 装依赖）：
 
 ```bash
 pack_portable.bat    # 产出 dist-portable/（约 94MB）

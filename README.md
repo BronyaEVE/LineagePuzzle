@@ -3,10 +3,6 @@
 > 内网环境下零依赖的 SQL 数据血缘可视化工具 —— 粘贴 DML 脚本，自动生成表级 + 列级血缘图谱，像拼图一样逐步还原整个数仓的数据流转。
 
 ![全局血缘图谱](docs/images/hero.png)
-<!-- 📷 截图需求：完整三栏布局的全局血缘图。
-     全屏浏览器后截图，画面要包含：左栏脚本列表 + 中栏血缘图（带流动箭头、
-     绿/黄/蓝节点、有 JOIN 分叉展现复杂度）+ 右栏语句面板 + 顶部搜索框。
-     用测试脚本 backend/tests/test_scripts.sql 的示例数据，4-6 个表。 -->
 
 ---
 
@@ -42,18 +38,36 @@
 
 ---
 
-## 🚀 Quick Start（5 分钟跑起来）
+## 🚀 Quick Start
 
-### 方式一：开发模式（推荐首次体验）
+提供两条路径，按你的环境选：
+
+### 方式 A：下载便携包（内网 / 普通用户，零安装）
+
+> 适合：内网隔离环境、不想折腾 Python/Node 环境的用户。
+
+1. 到 [Releases](../../releases/latest) 页面下载 `LineagePuzzle-v1.0.0-portable.zip`（约 94MB）
+2. 解压到任意目录（路径避免中文和空格）
+3. 双击 `run.bat`
+4. 浏览器打开 **http://localhost:8000**
+
+**就这样。** 目标机不需要安装 Python、Node、Docker，也不需要联网。便携包自带 Python 3.13 运行时和全部依赖。把整个文件夹拷进 U 盘，到哪台内网机器都能跑。
+
+> 让同事访问？`run.bat` 默认监听 `0.0.0.0:8000`，同事用 `http://你的IP:8000` 即可访问。拷贝 `app/data/` 给他，他启动后能看到相同的全局图谱。
+
+### 方式 B：从源码构建（开发者）
+
+> 适合：想阅读/修改代码、贡献 PR 的开发者。需要联网环境。
 
 ```bash
-# 1. 安装后端依赖
-cd backend && pip install -r requirements.txt
+git clone https://github.com/BronyaEVE/LineagePuzzle.git
+cd LineagePuzzle
 
-# 2. 安装前端依赖
+# 安装依赖
+cd backend && pip install -r requirements.txt
 cd ../frontend && npm install
 
-# 3. 一键启停（后端 :8000 + 前端 :5173）
+# 启动（后端 :8000 + 前端 dev :5173）
 cd .. && ./ctl.sh start
 ```
 
@@ -69,15 +83,14 @@ SELECT id, amount * 1.1, name FROM tmp_detail;
 
 点「分析血缘」—— 你会看到 `orders`、`customers`（绿）→ `tmp_detail`（黄）→ `order_report`（蓝）的血缘链路。再点任意一条边，右侧弹出列级映射。
 
-### 方式二：一体化部署（生产，单端口）
+**一体化部署**（生产，单端口）：
 
 ```bash
 cd frontend && npm run build        # 构建前端到 dist/
-cd ../backend
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+cd ../backend && uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-打开 **http://localhost:8000** （单进程同时服务页面 + API）。
+打开 **http://localhost:8000**（单进程同时服务页面 + API）。
 
 > **不需要数据库**。血缘提取纯靠 SQL 语法解析，数据库仅用于可选的表存在性校验。
 
