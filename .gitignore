@@ -16,8 +16,9 @@ backend/data/
 
 # 打包产物（pack_portable.bat 生成，含内嵌 Python，体积大），不进版本库
 # 注：frontend/dist 不进版本库（被 frontend/.gitignore 的 dist 规则忽略），
-# 部署时靠本地 build 或 dist-portable 离线包。
+# 部署时靠本地 build 或 GitHub Release 下载便携包。
 dist-portable/
-dist-portable.zip
 dist-offline/
-dist-offline.zip
+# 便携包 zip 产物（含版本号命名，如 LineagePuzzle-v1.0.0-portable.zip）
+LineagePuzzle-*-portable.zip
+*-portable.zip

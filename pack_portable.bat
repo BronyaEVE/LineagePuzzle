@@ -80,7 +80,6 @@ copy "%BE%\requirements.txt" "%APP_DIR%\" >nul
 mkdir "%APP_DIR%\data\scripts" 2>nul
 xcopy "%FE%\dist" "%OUT%\frontend\dist\" /e /i /q /y >nul
 copy "%CD%\run.bat" "%OUT%\" >nul
-copy "%CD%\README_PORTABLE.txt" "%OUT%\" >nul
 echo       Files copied
 
 REM --- 6. Smoke test: import critical C extensions via embedded python ---
