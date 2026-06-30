@@ -8,6 +8,8 @@ import os
 import json
 import shutil
 import tempfile
+import pathlib
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -118,9 +120,6 @@ def _read_edges():
     return store._read_edges()
 
 
-import pathlib
-
-
 class TestSaveAndList:
     """保存和列表测试"""
 
@@ -202,6 +201,37 @@ class TestGetAndDelete:
         store.delete_script("d3")
         tables_after = json.loads(store.TABLES_FILE.read_text())
         assert len(tables_after) == 0
+
+
+class TestScriptIdValidation:
+    """script_id 路径遍历防护测试（S1 安全修复）。
+
+    script_id 直接拼进文件路径，含 ../ 或路径分隔符会逃逸 SCRIPTS_DIR，
+    导致读/删任意文件。_validate_script_id 用白名单正则严格限制。
+    """
+
+    @pytest.mark.parametrize("bad_id", [
+        "../../etc/passwd",  # Unix 路径遍历
+        "..\\..\\config",   # Windows 路径遍历
+        "foo/../../bar",    # 嵌套遍历
+        "a/b",              # 含路径分隔符
+        "",                 # 空
+        "a b",              # 含空格
+        "a;b",              # 含特殊字符
+    ])
+    def test_reject_malicious_script_id(self, bad_id):
+        """非法 script_id 应被各入口函数拒绝（抛 ValueError）"""
+        with pytest.raises(ValueError):
+            store.get_script(bad_id)
+        with pytest.raises(ValueError):
+            store.delete_script(bad_id)
+        with pytest.raises(ValueError):
+            store.update_script_name(bad_id, "x")
+
+    def test_accept_valid_script_id(self):
+        """合法 script_id（uuid4 风格）不被拒绝"""
+        store._validate_script_id("550e8400-e29b-41d4-a716-446655440000")
+        store._validate_script_id("abc123_-")  # 字母数字下划线连字符
 
 
 class TestGlobalGraph:

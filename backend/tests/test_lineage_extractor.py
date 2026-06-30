@@ -192,50 +192,15 @@ class TestEdgeCases:
 
 
 class TestSchemaPrefixedTables:
-    """带 schema 前缀的表名处理测试（全限定名语义）"""
+    """schema 前缀表名的「集成」验证。
 
-    def test_insert_with_schema_prefix(self):
-        """INSERT 中源表带 schema 前缀 → 保留为 public.source_table"""
-        ref, created, modified = _extract_tables_via_ast(
-            "INSERT INTO target_table SELECT * FROM public.source_table;"
-        )
-        assert "public.source_table" in ref
-        assert "public.target_table" in modified
-
-    def test_insert_both_with_schema(self):
-        """INSERT 源表和目标表都带 schema 前缀"""
-        ref, created, modified = _extract_tables_via_ast(
-            "INSERT INTO public.target_table SELECT * FROM public.source_table;"
-        )
-        assert "public.source_table" in ref
-        assert "public.target_table" in modified
-
-    def test_join_with_schema_prefix(self):
-        """JOIN 中不同 schema 的表必须保留为独立节点（跨 schema 区分）"""
-        ref, _, _ = _extract_tables_via_ast(
-            "INSERT INTO report SELECT * FROM public.orders o JOIN analytics.customers c ON o.cid = c.id;"
-        )
-        assert "public.orders" in ref
-        assert "analytics.customers" in ref
-
-    def test_create_with_schema_prefix(self):
-        """CREATE TABLE 带 schema 前缀"""
-        ref, created, modified = _extract_tables_via_ast(
-            "CREATE TABLE public.tmp_orders AS SELECT * FROM source;"
-        )
-        assert "public.source" in ref
-        assert "public.tmp_orders" in created
-
-    def test_schema_prefix_distinct_from_plain(self):
-        """裸表名 src 与 public.src 应归一化为同一全限定名 public.src（不产生重复）"""
-        ref, _, _ = _extract_tables_via_ast(
-            "INSERT INTO t SELECT a.x FROM public.src a JOIN src b ON a.id = b.id;"
-        )
-        # 裸表名 src 补 public 后与 public.src 相同 → 去重后只剩一个
-        assert ref.count("public.src") == 1
+    注：表名归一化本身（裸名补 public、引号处理、跨 schema 区分等）的单元测试在
+    test_normalize.py 已完整覆盖，这里只验证血缘提取链路是否正确串联归一化后的表名，
+    不重复测归一化逻辑。
+    """
 
     def test_schema_lineage_qualified(self):
-        """血缘关系中的表名应为全限定名"""
+        """血缘关系中的表名应为全限定名（public.orders → public.report）"""
         stmts = [
             _make_stmt(1, StatementType.INSERT,
                        "INSERT INTO public.report SELECT * FROM public.orders;")
@@ -260,11 +225,10 @@ class TestSchemaPrefixedTables:
         assert src_lin.target_table == "public.tmp"
 
     def test_cross_schema_same_name_distinct(self):
-        """跨 schema 同名表必须区分（新设计核心价值）"""
+        """跨 schema 同名表在血缘提取中必须区分（核心价值）"""
         ref, _, _ = _extract_tables_via_ast(
             "INSERT INTO target SELECT * FROM public.orders o JOIN reporting.orders r ON o.id = r.id;"
         )
-        # public.orders 与 reporting.orders 是两个独立节点
         assert "public.orders" in ref
         assert "reporting.orders" in ref
         assert ref.count("public.orders") == 1
