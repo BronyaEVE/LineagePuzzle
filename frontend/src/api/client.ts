@@ -1,5 +1,5 @@
 import type {
-  AnalysisResult, AnalyzeRequest,
+  AnalysisResult, AnalyzeRequest, DatabaseConfig,
   ScriptSummary, GlobalGraph, ImpactAnalysis,
 } from "../types";
 
@@ -49,6 +49,24 @@ export async function submitAnalysis(payload: AnalyzeRequest): Promise<AnalysisR
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+}
+
+/**
+ * 批量分析：一次提交多个 SQL 文件，每个产出独立脚本。
+ *
+ * files 为前端已读取（zip 已解压）的 {name, content} 数组。
+ * 批量可能涉及大量 SQL，超时放宽到 60s（默认 15s 对批量不够）。
+ */
+export async function submitBatchAnalysis(
+  files: { name: string; content: string }[],
+  dbConfig: DatabaseConfig | null,
+): Promise<AnalysisResult[]> {
+  return request<AnalysisResult[]>(`${API_BASE}/analyze-batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ files, database_config: dbConfig }),
+    timeout: 60000,
   });
 }
 

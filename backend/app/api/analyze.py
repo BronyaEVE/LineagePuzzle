@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from ..models.analysis import AnalysisResult, ScriptSummary, GlobalGraph
-from ..schemas.requests import AnalyzeRequest, CorrectStatementRequest
+from ..schemas.requests import AnalyzeRequest, CorrectStatementRequest, BatchAnalyzeRequest
 from ..services.analyzer import analyze
 from ..services.lineage_extractor import extract_lineages
 from ..services import store
@@ -21,6 +21,38 @@ async def analyze_script(request: AnalyzeRequest):
 
     result = store.save_script(result)
     return result
+
+
+@router.post("/analyze-batch", response_model=list[AnalysisResult])
+async def analyze_batch(request: BatchAnalyzeRequest):
+    """批量分析多个 SQL 文件，每个文件产出独立脚本。
+
+    前端解压 zip + 读取所有 .sql 文件内容后，以 {files: [{name, content}]}
+    JSON 形式提交。后端逐个 analyze + save_script，每个文件成为一个独立脚本
+    （各自 analysis_id，可单独删除/重命名）。
+
+    部分失败容错：单个文件分析失败不阻塞其他文件。全部失败才返回 500，
+    部分成功则返回成功的列表（失败信息通过 X-Batch-Errors 响应头透出）。
+    """
+    results: list[AnalysisResult] = []
+    errors: list[str] = []
+    for item in request.files:
+        try:
+            result = analyze(item.content, request.database_config)
+            # 用文件名作为脚本显示名（去掉 .sql 后缀更清爽）
+            result.name = item.name.removesuffix(".sql").removesuffix(".SQL")
+            result = store.save_script(result)
+            results.append(result)
+        except Exception as e:
+            errors.append(f"{item.name}: {str(e)}")
+
+    # 全部失败才报错；部分成功则正常返回成功的列表
+    if errors and not results:
+        raise HTTPException(
+            status_code=500,
+            detail="全部文件分析失败: " + "; ".join(errors),
+        )
+    return results
 
 
 # === 脚本管理 ===

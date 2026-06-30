@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { ConfigProvider, Layout, Button, Modal, message, Tag, Space, Popconfirm } from "antd";
+import { ConfigProvider, Layout, Button, Modal, message, Tag, Space, Popconfirm, Segmented } from "antd";
 import { PlusOutlined, SettingOutlined, DownloadOutlined, UploadOutlined } from "@ant-design/icons";
 import ScriptList from "./components/ScriptList";
 import ScriptEditor from "./components/ScriptEditor";
@@ -9,6 +9,7 @@ import LineageGraph from "./components/LineageGraph";
 import type { FocusTarget } from "./components/LineageGraph";
 import SearchBox, { type SearchTarget } from "./components/SearchBox";
 import ParamMappingConfig from "./components/ParamMappingConfig";
+import BatchImport from "./components/BatchImport";
 import {
   submitAnalysis, listScripts, getScript, deleteScript,
   renameScript, getGlobalGraph, getParamMapping, setParamMapping,
@@ -37,6 +38,8 @@ function App() {
   // 搜索框选中后聚焦目标（传给 LineageGraph 执行 fitView + 高亮）
   const [focusTarget, setFocusTarget] = useState<FocusTarget | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  // 新建分析弹窗的输入模式：手动粘贴 SQL / 批量导入文件
+  const [analyzeMode, setAnalyzeMode] = useState<"manual" | "batch">("manual");
   const [loading, setLoading] = useState(false);
 
   // 新建分析的表单状态
@@ -346,13 +349,38 @@ function App() {
         width={800}
         destroyOnHidden
       >
+        {/* DB 配置对两种输入模式共用 */}
         <DatabaseConfigForm value={dbConfig} onChange={setDbConfig} />
-        <ScriptEditor
-          value={script}
-          onChange={setScript}
-          onAnalyze={handleAnalyze}
-          loading={loading}
-        />
+
+        {/* 输入模式切换：手动粘贴 / 批量导入 */}
+        <div style={{ margin: "12px 0 8px" }}>
+          <Segmented
+            value={analyzeMode}
+            onChange={(v) => setAnalyzeMode(v as "manual" | "batch")}
+            options={[
+              { label: "手动粘贴 SQL", value: "manual" },
+              { label: "批量导入文件", value: "batch" },
+            ]}
+            block
+          />
+        </div>
+
+        {analyzeMode === "manual" ? (
+          <ScriptEditor
+            value={script}
+            onChange={setScript}
+            onAnalyze={handleAnalyze}
+            loading={loading}
+          />
+        ) : (
+          <BatchImport
+            dbConfig={dbConfig}
+            onSuccess={async () => {
+              setModalOpen(false);
+              await refreshAll();
+            }}
+          />
+        )}
       </Modal>
 
       {/* 参数映射弹窗 */}
