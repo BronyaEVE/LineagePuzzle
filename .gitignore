@@ -3,6 +3,9 @@ dist/
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
 run/
 logs/
 .playwright-mcp/
