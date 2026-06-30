@@ -2,7 +2,7 @@
 setlocal
 
 REM ============================================================
-REM DataLineage Visualizer - Portable Launcher
+REM LineagePuzzle - Portable Launcher
 REM
 REM Uses the bundled embedded Python (python\python.exe).
 REM Target machine needs NOTHING installed.
@@ -18,7 +18,7 @@ set "PORT=8000"
 
 echo.
 echo ============================================================
-echo   DataLineage Visualizer
+echo   LineagePuzzle
 echo ============================================================
 echo.
 

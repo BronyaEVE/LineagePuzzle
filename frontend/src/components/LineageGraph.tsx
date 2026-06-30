@@ -412,7 +412,7 @@ const LineageGraph: React.FC<Props> = ({
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<title>DataLineage 血缘图</title>
+<title>LineagePuzzle 血缘图</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xyflow/react@12/dist/style.css">
 <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>

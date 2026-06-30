@@ -2,7 +2,7 @@
 setlocal
 
 REM ============================================================
-REM DataLineage Visualizer - Portable (Green) Package Builder
+REM LineagePuzzle - Portable (Green) Package Builder
 REM
 REM Produces dist-portable\ with embedded Python + all deps + app.
 REM Target machine needs NOTHING installed (no Python, no Docker).
@@ -24,7 +24,7 @@ set "EMBED_URL=https://mirrors.huaweicloud.com/python/3.13.12/python-3.13.12-emb
 
 echo.
 echo ============================================================
-echo   DataLineage Visualizer - Portable Packaging
+echo   LineagePuzzle - Portable Packaging
 echo   Embedded Python 3.13.12 + full deps
 echo ============================================================
 echo.

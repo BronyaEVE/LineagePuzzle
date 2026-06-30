@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# DataLineage Visualizer 启停脚本
+# LineagePuzzle 启停脚本
 # 用法:
 #   ./ctl.sh start                      # 默认端口: 后端 8000, 前端 5173
 #   ./ctl.sh start -b 9000 -f 3000      # 指定后端和前端端口
@@ -141,7 +141,7 @@ do_start() {
     fi
 
     info "=============================="
-    info "  DataLineage Visualizer 启动"
+    info "  LineagePuzzle 启动"
     info "=============================="
     echo ""
 
