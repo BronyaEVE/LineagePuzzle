@@ -142,7 +142,7 @@ Switch to the "Batch Import" tab in the "New Analysis" dialog, drag in multiple 
 - **Import/Export**: one-click backup/migration of all lineage data (JSON)
 - **Graph export**: export the current graph as PNG / standalone HTML
 
-> Full feature docs, architecture, and API reference in **[docs/PROJECT.md](docs/PROJECT.md)** (currently in Chinese).
+> Full feature docs, architecture, and API reference in **[docs/PROJECT.md](docs/PROJECT.md)**.
 
 ---
 

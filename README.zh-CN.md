@@ -147,7 +147,7 @@ public.orders → public.order_report   操作：INSERT   语句 #1
 - **导入/导出**：一键备份/迁移全部血缘数据（JSON）
 - **图导出**：导出当前图谱为 PNG / 独立 HTML
 
-> 完整功能说明、架构设计、API 文档见 **[docs/PROJECT.md](docs/PROJECT.md)**。
+> 完整功能说明、架构设计、API 文档见 **[docs/PROJECT.zh-CN.md](docs/PROJECT.zh-CN.md)**。
 
 ---
 
