@@ -207,14 +207,14 @@ const LineageGraph: React.FC<Props> = ({
     // 选了脚本 → 用脚本级别的 visualization
     if (highlightScriptId && visualization && visualization.nodes.length > 0) {
       const nodes: Node[] = visualization.nodes.map((n) => {
-        const expanded = expandedNodeId === n.id;
+        // expandedNodeId 不进本 useMemo 依赖：展开是纯样式变化，
+        // 不应触发全图重新布局（autoLayout 是 O(V+E)）。展开效果由下面的
+        // 节点 style effect 单独应用，复用本 useMemo 算出的布局结果。
         return {
           id: n.id,
-          data: { label: expanded ? n.label : truncateLabel(n.label), fullName: n.label, nodeType: n.type },
+          data: { label: truncateLabel(n.label), fullName: n.label, nodeType: n.type },
           position: { x: 0, y: 0 },
-          style: expanded
-            ? { ...nodeStyle(n.type), maxWidth: "none", border: "3px solid #fff", boxShadow: "0 0 8px rgba(255,255,255,0.8)" }
-            : nodeStyle(n.type),
+          style: nodeStyle(n.type),
         };
       });
       const edges: Edge[] = visualization.edges.map((e, i) => ({
@@ -226,7 +226,8 @@ const LineageGraph: React.FC<Props> = ({
           statement_seq: e.statement_seq,
           column_mappings: e.column_mappings || [],  // 列级血缘，点边时展示
         },
-        animated: true,
+        // 默认不动画：SVG 流动动画在节点/边多时是卡顿主因，仅高亮时才 animated
+        animated: false,
         markerEnd: { type: MarkerType.ArrowClosed },
         style: { stroke: "#8c8c8c", strokeWidth: 2 },
         labelStyle: { fontSize: 11, fontWeight: 600, fill: "#333" },
@@ -243,14 +244,12 @@ const LineageGraph: React.FC<Props> = ({
     }
 
     const nodes: Node[] = globalGraph.nodes.map((n) => {
-      const expanded = expandedNodeId === n.id;
+      // expandedNodeId 不进本 useMemo 依赖（同上）
       return {
         id: n.id,
-        data: { label: expanded ? n.label : truncateLabel(n.label), fullName: n.label, nodeType: n.type },
+        data: { label: truncateLabel(n.label), fullName: n.label, nodeType: n.type },
         position: { x: 0, y: 0 },
-        style: expanded
-          ? { ...nodeStyle(n.type), maxWidth: "none", border: "3px solid #fff", boxShadow: "0 0 8px rgba(255,255,255,0.8)" }
-          : nodeStyle(n.type),
+        style: nodeStyle(n.type),
       };
     });
     const edges: Edge[] = globalGraph.edges.map((e: GlobalEdge, i: number) => ({
@@ -263,7 +262,8 @@ const LineageGraph: React.FC<Props> = ({
         statement_seq: e.statement_seq,
         column_mappings: e.column_mappings || [],  // 列级血缘，点边时展示
       },
-      animated: true,
+      // 默认不动画：SVG 流动动画在节点/边多时是卡顿主因，仅高亮时才 animated
+      animated: false,
       markerEnd: { type: MarkerType.ArrowClosed },
       style: { stroke: "#8c8c8c", strokeWidth: 2 },
       labelStyle: { fontSize: 11, fontWeight: 600, fill: "#333" },
@@ -273,7 +273,7 @@ const LineageGraph: React.FC<Props> = ({
     }));
 
     return { laidNodes: autoLayout(nodes, edges, layoutDir), laidEdges: edges };
-  }, [globalGraph, visualization, highlightScriptId, layoutDir, expandedNodeId]);
+  }, [globalGraph, visualization, highlightScriptId, layoutDir]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(laidNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(laidEdges);
@@ -339,8 +339,8 @@ const LineageGraph: React.FC<Props> = ({
           labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#bbb" },
         };
       }
-      // 默认：全部正常显示（恢复流动动画，和初始化状态一致）
-      return { ...e, animated: true, style: { ...e.style, stroke: "#8c8c8c", strokeWidth: 2 },
+      // 默认：全部正常显示（不流动动画，避免边多时卡顿）
+      return { ...e, animated: false, style: { ...e.style, stroke: "#8c8c8c", strokeWidth: 2 },
         labelStyle: { ...e.labelStyle, fill: "#333" } };
     }));
   }, [laidEdges, highlightSeq, highlightScriptId, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, setEdges]);
@@ -370,11 +370,21 @@ const LineageGraph: React.FC<Props> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusTarget]);
 
-  // 节点布局变化时同步（边由上面的高亮 effect 基于 laidEdges 统一接管，
-  // 这里只更新节点，避免两个 effect 互相覆盖边样式导致高亮丢失）。
+  // 节点同步：布局变化时应用新坐标 + 展开状态样式。
+  // expandedNodeId 单独在此 effect 处理（不进布局 useMemo），
+  // 这样点节点展开表名不会触发全图 autoLayout 重算。
   React.useEffect(() => {
-    setNodes(laidNodes);
-  }, [laidNodes, setNodes]);
+    setNodes(laidNodes.map((n) => {
+      const expanded = expandedNodeId === n.id;
+      if (!expanded) return n;
+      const fullName = (n.data as { fullName?: string }).fullName ?? String((n.data as { label?: unknown }).label ?? "");
+      return {
+        ...n,
+        data: { ...n.data, label: fullName },
+        style: { ...n.style, maxWidth: "none", border: "3px solid #fff", boxShadow: "0 0 8px rgba(255,255,255,0.8)" },
+      };
+    }));
+  }, [laidNodes, expandedNodeId, setNodes]);
 
   const hasData = laidNodes.length > 0;
   const isScriptView = !!highlightScriptId && !!visualization?.nodes.length;

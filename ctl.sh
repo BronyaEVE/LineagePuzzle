@@ -69,7 +69,15 @@ load_ports() { [[ -f "$PID_DIR/ports" ]] && source "$PID_DIR/ports"; }
 
 check_port() {
     local port=$1
-    netstat -an 2>/dev/null | grep -q ":${port}.*LISTEN" 2>/dev/null && return 0
+    # 优先用 Python socket 精确检测（最可靠，不受 netstat 输出格式影响）。
+    # 旧实现用 netstat | grep ":${port}.*LISTEN"，但 grep 是子串匹配，
+    # :5173 会误匹配 :51737 / :51738 等端口，导致误报"端口已被占用"。
+    # 回退到 netstat 时用边界匹配 :${port}[^0-9] 避免子串误匹配。
+    if command -v python &>/dev/null; then
+        python -c "import socket,sys; s=socket.socket(); s.settimeout(0.3); sys.exit(0 if s.connect_ex(('127.0.0.1', ${port}))==0 else 1)" 2>/dev/null && return 0
+        return 1
+    fi
+    netstat -an 2>/dev/null | grep -qE ":${port}[^0-9].*LISTEN" 2>/dev/null && return 0
     return 1
 }
 
@@ -106,7 +114,8 @@ _get_all_descendants() {
 
 # 通过端口查找监听进程的 PID
 _pid_on_port() {
-    netstat -ano 2>/dev/null | grep ":${1}.*LISTEN" | awk '{print $5}' | sort -u | head -1
+    # 同 check_port：端口后必须是非数字字符，避免 :5173 误匹配 :51737
+    netstat -ano 2>/dev/null | grep -E ":${1}[^0-9].*LISTEN" | awk '{print $5}' | sort -u | head -1
 }
 
 # 强制杀进程（Windows 上用 taskkill，兼容 Git Bash）
