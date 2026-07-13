@@ -163,7 +163,9 @@ Step 6: Persistence             → save to JSON + update global graph (under fi
 | Click a statement | All edges of that `seq` highlight in blue |
 | Search box | Fuzzy-match table/column names; on select, focus + highlight |
 
-**Highlight priority:** single edge (click edge) > impact analysis (upstream/downstream bi-color) > statement-level (click statement) > script-level > default all-flowing
+**Highlight priority:** single edge (click edge) > impact analysis (upstream/downstream bi-color) > statement-level (click statement) > script-level > default (no highlight, static edges)
+
+> **Edge animation:** by default all edges are static (no flowing animation) to keep large graphs smooth — only highlighted edges animate.
 
 **Node style:** width auto-fits content (short names shrink, long names truncate + click to expand); expanded nodes glow with a white border.
 
