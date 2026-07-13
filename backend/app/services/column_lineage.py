@@ -351,11 +351,29 @@ def _extract_column_mappings_update(
       - transformation = total * 1.1
     SET status = 'paid':
       - status = 目标列，源列为空（常量），transformation = 'paid'
+    SET tag = CASE WHEN status = 1 THEN 'paid' ELSE 'unpaid' END:
+      - tag = 目标列，源列 = [status]（CASE 里的无前缀列回退到 target 表本身）
+      - transformation = CASE WHEN ... END
+
+    无前缀列的源表回退（与 SELECT 路径一致）：
+      - SET 右边引用了同表列（UPDATE t SET x = y）但没写表前缀时，
+        y 归到 target 表本身（self-reference，列级有意义、表级避免自环）
+      - UPDATE ... FROM other（postgres 扩展）且 FROM 仅一个表时，
+        无前缀列归到 FROM 的表
     """
     mappings: list[ColumnMapping] = []
     set_expr = parsed.args.get("expressions")  # SET 子句是 EQ 表达式列表
     if not set_expr:
         return mappings
+
+    # 收集 FROM 子句的候选源表（postgres UPDATE...FROM 扩展），用于无前缀列回退
+    fr = parsed.args.get("from_") or parsed.args.get("from")
+    from_tables: list[str] = []
+    if fr is not None:
+        for t in fr.find_all(exp.Table):
+            from_tables.append(_qualified_name_from_table(t))
+    # 无前缀列的兜底源表：仅一个 FROM 表 → 该表；否则（含无 FROM）→ target 表本身
+    fallback_source = from_tables[0] if len(from_tables) == 1 else target_table
 
     for eq in set_expr:
         if not isinstance(eq, exp.EQ):
@@ -382,7 +400,11 @@ def _extract_column_mappings_update(
         else:
             by_table: dict[str, list[str]] = {}
             for c in source_cols:
-                resolved = alias_map.get(c.table, "") if c.table else ""
+                if c.table:
+                    resolved = alias_map.get(c.table, c.table)
+                else:
+                    # 无前缀列：回退到单源表（FROM 唯一表或 target 表本身）
+                    resolved = fallback_source
                 by_table.setdefault(resolved, []).append(c.name)
             for src_table, cols in by_table.items():
                 mappings.append(ColumnMapping(
