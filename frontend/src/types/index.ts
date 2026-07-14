@@ -30,6 +30,7 @@ export interface PreprocessRule {
   replacement: string;    // 替换文本，支持 $1 $2 反向引用
   enabled: boolean;
   builtin: boolean;       // 内置规则（参数映射迁移而来，或系统预置）
+  locked: boolean;        // 锁定规则（核心清洗，可开关但不可删除）
 }
 
 // === Response Types ===

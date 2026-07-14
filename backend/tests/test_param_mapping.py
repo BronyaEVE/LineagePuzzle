@@ -140,9 +140,14 @@ class TestPreprocessWithRules:
     """preprocess 通过 rules 参数集成规则替换 + 去注释"""
 
     def test_params_replaced_before_parse(self):
-        """参数规则替换在去注释之前生效"""
+        """参数规则替换在去注释之前生效（去注释由 locked 规则执行）"""
         sql = "-- 注释\nINSERT INTO ${icl_schema}.t SELECT * FROM ${icl_schema}.s"
-        out = preprocess(sql, rules=_param_rules({"icl_schema": "ods"}))
+        # 模拟 store 的完整规则：locked 去注释 + 参数规则
+        rules = [
+            {"id": "builtin-line-comment", "pattern": r"--[^\n]*", "replacement": "", "enabled": True, "locked": True},
+            {"id": "builtin-block-comment", "pattern": r"/\*.*?\*/", "replacement": "", "enabled": True, "locked": True},
+        ] + _param_rules({"icl_schema": "ods"})
+        out = preprocess(sql, rules=rules)
         assert "ods.t" in out
         assert "ods.s" in out
         assert "${" not in out
@@ -257,17 +262,29 @@ class TestStoreParamMapping:
 # ============ store 预处理规则读写测试 ============
 
 class TestStorePreprocessRules:
-    """store 层预处理规则持久化"""
+    """store 层预处理规则持久化
 
-    def test_get_empty_when_no_file(self):
+    注意：get_preprocess_rules 首次调用会预置默认 locked 规则（去块注释、去行注释）。
+    测试时需考虑这些 locked 规则的存在。
+    """
+
+    def test_get_default_locked_rules_when_no_file(self):
+        """无文件时返回默认 locked 规则（非空）"""
         from app.services import store
         if store.PREPROCESS_RULES_FILE.exists():
             store.PREPROCESS_RULES_FILE.unlink()
         if store.PARAM_MAPPING_FILE.exists():
             store.PARAM_MAPPING_FILE.unlink()
-        assert store.get_preprocess_rules() == []
+        rules = store.get_preprocess_rules()
+        # 默认预置 locked 规则
+        ids = {r["id"] for r in rules}
+        assert "builtin-block-comment" in ids
+        assert "builtin-line-comment" in ids
+        # 都是 locked
+        assert all(r["locked"] for r in rules)
 
-    def test_set_and_get(self):
+    def test_set_and_get_custom_rule(self):
+        """自定义规则可写入并读回（locked 规则会自动保留）"""
         from app.services import store
         if store.PREPROCESS_RULES_FILE.exists():
             store.PREPROCESS_RULES_FILE.unlink()
@@ -275,12 +292,13 @@ class TestStorePreprocessRules:
             {"id": "r1", "name": "test", "pattern": "foo", "replacement": "bar", "enabled": True},
         ]
         result = store.set_preprocess_rules(rules)
-        assert len(result) == 1
-        assert result[0]["id"] == "r1"
+        # 自定义规则 + locked 规则自动补回
+        ids = {r["id"] for r in result}
+        assert "r1" in ids
         # 读回
         got = store.get_preprocess_rules()
-        assert len(got) == 1
-        assert got[0]["pattern"] == "foo"
+        got_ids = {r["id"] for r in got}
+        assert "r1" in got_ids
 
     def test_invalid_regex_rejected(self):
         """非法正则 pattern 被过滤"""
@@ -292,8 +310,9 @@ class TestStorePreprocessRules:
             {"id": "bad", "pattern": "[invalid", "replacement": "", "enabled": True},
         ]
         result = store.set_preprocess_rules(rules)
-        assert len(result) == 1
-        assert result[0]["id"] == "ok"
+        ids = {r["id"] for r in result}
+        assert "ok" in ids
+        assert "bad" not in ids  # 非法正则被过滤
 
     def test_duplicate_id_rejected(self):
         """重复 id 被去重"""
@@ -305,24 +324,58 @@ class TestStorePreprocessRules:
             {"id": "dup", "pattern": "c", "replacement": "d", "enabled": True},
         ]
         result = store.set_preprocess_rules(rules)
-        assert len(result) == 1  # 第二个重复 id 被拒
+        # 只保留第一个 dup（第二个被拒），locked 规则也会补回
+        dup_count = sum(1 for r in result if r["id"] == "dup")
+        assert dup_count == 1
+
+    def test_locked_rule_cannot_be_deleted(self):
+        """locked 规则不可删除：提交不含 locked 规则的列表会被自动补回"""
+        from app.services import store
+        if store.PREPROCESS_RULES_FILE.exists():
+            store.PREPROCESS_RULES_FILE.unlink()
+        # 提交空列表（尝试删除所有规则）
+        result = store.set_preprocess_rules([])
+        ids = {r["id"] for r in result}
+        assert "builtin-block-comment" in ids
+        assert "builtin-line-comment" in ids
+
+    def test_locked_rule_enabled_respected(self):
+        """locked 规则的 enabled 状态被尊重（可关闭但不可删）"""
+        from app.services import store
+        if store.PREPROCESS_RULES_FILE.exists():
+            store.PREPROCESS_RULES_FILE.unlink()
+        # 先初始化默认规则
+        store.get_preprocess_rules()
+        # 关闭块注释
+        result = store.set_preprocess_rules([
+            {"id": "builtin-block-comment", "pattern": r"/\*.*?\*/", "replacement": "", "enabled": False, "builtin": True, "locked": True},
+        ])
+        block_rule = next(r for r in result if r["id"] == "builtin-block-comment")
+        assert block_rule["enabled"] is False  # 关闭被尊重
+        # 行注释被自动补回（因为用户没提交它）
+        line_rule = next(r for r in result if r["id"] == "builtin-line-comment")
+        assert line_rule["enabled"] is True
 
     def test_migration_from_param_mapping(self):
-        """旧 param_mapping.json 自动迁移为 builtin 规则"""
+        """旧 param_mapping.json 自动迁移为 builtin 规则（附加在 locked 规则后）"""
         from app.services import store
         # 清空确保干净
         if store.PREPROCESS_RULES_FILE.exists():
             store.PREPROCESS_RULES_FILE.unlink()
         # 写旧格式文件
         store._write_json(store.PARAM_MAPPING_FILE, {"icl_schema": "ods", "env": "prod"})
-        # 触发迁移（get_preprocess_rules 内部调用 _migrate）
+        # 触发迁移（get_preprocess_rules 内部调用 _init_default_rules）
         rules = store.get_preprocess_rules()
-        assert len(rules) == 2
+        # 2 条 locked 规则 + 2 条迁移的参数规则 = 4
         ids = {r["id"] for r in rules}
-        assert "param-icl_schema" in ids
+        assert "builtin-block-comment" in ids  # locked 规则
+        assert "builtin-line-comment" in ids
+        assert "param-icl_schema" in ids  # 迁移规则
         assert "param-env" in ids
-        # 所有迁移规则都是 builtin
-        assert all(r["builtin"] for r in rules)
+        # 迁移规则都是 builtin 非 locked
+        param_rules = [r for r in rules if r["id"].startswith("param-")]
+        assert all(r["builtin"] for r in param_rules)
+        assert all(not r.get("locked") for r in param_rules)
         # pattern 正确
         schema_rule = next(r for r in rules if r["id"] == "param-icl_schema")
         assert schema_rule["pattern"] == r"\$\{icl_schema\}"

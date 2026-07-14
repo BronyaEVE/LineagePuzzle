@@ -98,47 +98,48 @@ def preprocess(script: str, rules: list[dict] | None = None,
 
     三阶段流水线：
       阶段 A（可配置）：apply_rules 按规则列表顺序执行正则替换（含参数映射规则）
-      阶段 B（固定核心）：去注释 → DO block 提取 → 事务补分号 → 压缩空格
+      阶段 B（固定核心）：去注释（受 locked 规则开关控制）→ DO block 提取 → 事务补分号 → 压缩空格
 
     rules: 预处理规则列表（来自 store.get_preprocess_rules）。None 时跳过阶段 A。
-    param_mapping: [已废弃] 旧参数映射，仅为向后兼容保留。若 rules 为 None
-                   且 param_mapping 有值，走旧的 replace_params 路径。
+    param_mapping: [已废弃] 旧参数映射，仅为向后兼容保留。
+
+    去注释的开关：阶段 A 的 apply_rules 已经执行了 locked 去注释规则（如果 enabled）。
+    阶段 B 不再重复执行去注释——避免双重处理。但如果 rules=None（旧调用方式），
+    阶段 B 仍然兜底去注释。
 
     注意：不会移除 CREATE TABLE / CREATE TEMP TABLE 语句。
     注意：不碰 END 关键字（CASE WHEN...END vs 事务块 END 无法区分）。
     """
-    # 阶段 A：可配置规则替换
+    # 阶段 A：可配置规则替换（含 locked 去注释规则，如果 enabled）
     if rules is not None:
         text = apply_rules(script, rules)
     elif param_mapping is not None:
-        # 向后兼容：旧调用方式 preprocess(script, param_mapping=...)
         text = replace_params(script, param_mapping)
+        # 旧调用方式：阶段 B 兜底去注释
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        text = re.sub(r"--[^\n]*", "", text)
     else:
         text = script
+        # 无规则：阶段 B 兜底去注释
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        text = re.sub(r"--[^\n]*", "", text)
 
     # 兜底：未匹配的 ${param} 占位符替换成参数名本身（当合法标识符用）。
-    # 用户没配参数规则时，${icl_schema} → icl_schema，保证血缘仍可提取。
-    # 规则已匹配的不会含 ${}，这里只处理残留的未匹配占位符。
     text = re.sub(r"\$\{(\w+)\}", r"\1", text)
 
-    # 阶段 B：固定核心（不可配置，是 splitter/sqlglot 正常工作的前提）
-    # 1. 去除多行注释 /* ... */
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    # 2. 去除单行注释 --
-    text = re.sub(r"--[^\n]*", "", text)
-    # 3. 从 DO $$...$$ 匿名块提取 DML（去掉外壳 + PL/pgSQL 控制关键字）
+    # 阶段 B：固定核心（不可配置）
+    # 1. 从 DO $$...$$ 匿名块提取 DML（去掉外壳 + PL/pgSQL 控制关键字）
     text = extract_dml_from_do_blocks(text)
-    # 4. 给行首事务关键字补分号（裸 BEGIN 无分号时，避免把后续 DML 粘进同一段被 _should_keep 丢弃）
-    #    不碰 END —— END 在 CASE WHEN...END 中合法，误补分号会切断 CASE 表达式
+    # 2. 给行首事务关键字补分号
     text = re.sub(
         r"(?im)^(?=\s*(?:BEGIN(?:\s+TRANSACTION)?|START\s+TRANSACTION|COMMIT|ROLLBACK)\b)([^;\n]*)$",
         lambda m: m.group(1) if ";" in m.group(1) else m.group(1).rstrip() + ";",
         text,
     )
-    # 5. 压缩连续空格（保留换行，方便后续按行处理）
+    # 3. 压缩连续空格（保留换行，方便后续按行处理）
     text = re.sub(r"[^\S\n]+", " ", text)
-    # 6. 去除每行首尾空白
+    # 4. 去除每行首尾空白
     lines = [line.strip() for line in text.splitlines()]
-    # 7. 移除空行
+    # 5. 移除空行
     lines = [line for line in lines if line]
     return "\n".join(lines)

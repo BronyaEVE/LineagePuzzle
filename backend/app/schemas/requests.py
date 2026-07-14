@@ -53,6 +53,7 @@ class PreprocessRule(BaseModel):
     - replacement: 替换文本，支持 $1 $2 反向引用（re.sub 第二个参数）
     - enabled: 是否启用（关闭的规则在 preprocess 时跳过）
     - builtin: 是否内置规则（用于前端区分样式 + "恢复默认"）
+    - locked: 是否锁定（内置核心规则 locked=true，可开关但不可删除，防止误操作导致解析崩溃）
     """
     id: str = Field(..., min_length=1)
     name: str = Field("", max_length=100)
@@ -60,3 +61,4 @@ class PreprocessRule(BaseModel):
     replacement: str = Field("")
     enabled: bool = True
     builtin: bool = False
+    locked: bool = False

@@ -429,26 +429,36 @@ class TestParamMapping:
 
 
 class TestPreprocessRules:
-    """预处理规则 API（GET/PUT /preprocess-rules）"""
+    """预处理规则 API（GET/PUT /preprocess-rules）
 
-    def test_get_empty(self):
+    注意：首次 GET 会预置默认 locked 规则（去块注释、去行注释）。
+    """
+
+    def test_get_default_locked_rules(self):
+        """首次 GET 返回默认 locked 规则（非空）"""
         r = client.get("/api/preprocess-rules")
         assert r.status_code == 200
-        assert r.json() == []
+        data = r.json()
+        ids = {rule["id"] for rule in data}
+        assert "builtin-block-comment" in ids
+        assert "builtin-line-comment" in ids
 
-    def test_set_and_get(self):
+    def test_set_and_get_custom_rule(self):
+        """自定义规则可写入并读回（locked 规则自动保留）"""
         rules = [
-            {"id": "r1", "name": "去注释", "pattern": "--[^\\n]*", "replacement": "", "enabled": True, "builtin": False},
+            {"id": "r1", "name": "自定义", "pattern": "--[^\\n]*", "replacement": "", "enabled": True, "builtin": False},
         ]
         r = client.put("/api/preprocess-rules", json=rules)
         assert r.status_code == 200
         data = r.json()
-        assert len(data) == 1
-        assert data[0]["id"] == "r1"
+        ids = {rule["id"] for rule in data}
+        assert "r1" in ids
+        # locked 规则被自动补回
+        assert "builtin-block-comment" in ids
         # 读回确认持久化
         got = client.get("/api/preprocess-rules").json()
-        assert len(got) == 1
-        assert got[0]["pattern"] == "--[^\\n]*"
+        got_ids = {rule["id"] for rule in got}
+        assert "r1" in got_ids
 
     def test_invalid_regex_filtered(self):
         """非法正则被后端过滤"""
@@ -459,8 +469,9 @@ class TestPreprocessRules:
         r = client.put("/api/preprocess-rules", json=rules)
         assert r.status_code == 200
         data = r.json()
-        assert len(data) == 1
-        assert data[0]["id"] == "ok"
+        ids = {rule["id"] for rule in data}
+        assert "ok" in ids
+        assert "bad" not in ids  # 非法正则被过滤
 
     def test_rules_take_effect_in_analyze(self):
         """配置的规则在分析时生效（端到端）"""

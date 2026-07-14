@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Input, Button, Typography, Space, Switch, Tag, Tooltip } from "antd";
-import { PlusOutlined, DeleteOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import { PlusOutlined, DeleteOutlined, ThunderboltOutlined, LockOutlined } from "@ant-design/icons";
 import type { PreprocessRule } from "../types";
 
 /**
@@ -60,6 +60,7 @@ const PreprocessRulesConfig: React.FC<Props> = ({ value, onChange }) => {
       replacement: "",
       enabled: true,
       builtin: false,
+      locked: false,
     };
     syncChange([...rows, newRule]);
   };
@@ -85,8 +86,8 @@ const PreprocessRulesConfig: React.FC<Props> = ({ value, onChange }) => {
             key={row.id}
             style={{
               marginBottom: 8, padding: "8px 10px",
-              background: row.builtin ? "#fafafa" : "#f6ffed",
-              border: `1px solid ${row.builtin ? "#f0f0f0" : "#b7eb8f"}`,
+              background: row.locked ? "#fff7e6" : (row.builtin ? "#fafafa" : "#f6ffed"),
+              border: `1px solid ${row.locked ? "#ffd591" : (row.builtin ? "#f0f0f0" : "#b7eb8f")}`,
               borderRadius: 4,
             }}
           >
@@ -96,22 +97,31 @@ const PreprocessRulesConfig: React.FC<Props> = ({ value, onChange }) => {
                 checked={row.enabled}
                 onChange={(checked) => updateRow(idx, { enabled: checked })}
               />
-              {row.builtin && <Tag color="blue" style={{ fontSize: 11 }}>内置</Tag>}
+              {row.locked && (
+                <Tag color="orange" style={{ fontSize: 11 }} icon={<LockOutlined />}>锁定</Tag>
+              )}
+              {row.builtin && !row.locked && <Tag color="blue" style={{ fontSize: 11 }}>内置</Tag>}
               <Input
                 placeholder="规则名称（如：去单行注释）"
                 style={{ flex: 1, minWidth: 180 }}
                 value={row.name}
                 onChange={(e) => updateRow(idx, { name: e.target.value })}
               />
-              <Tooltip title="删除规则">
-                <Button
-                  type="text"
-                  danger
-                  size="small"
-                  icon={<DeleteOutlined />}
-                  onClick={() => removeRow(idx)}
-                />
-              </Tooltip>
+              {row.locked ? (
+                <Tooltip title="核心规则不可删除（可开关）">
+                  <Button type="text" size="small" disabled icon={<LockOutlined />} />
+                </Tooltip>
+              ) : (
+                <Tooltip title="删除规则">
+                  <Button
+                    type="text"
+                    danger
+                    size="small"
+                    icon={<DeleteOutlined />}
+                    onClick={() => removeRow(idx)}
+                  />
+                </Tooltip>
+              )}
             </Space>
             <Space style={{ display: "flex", alignItems: "flex-start" }} align="start">
               <div style={{ flex: 1, minWidth: 0 }}>

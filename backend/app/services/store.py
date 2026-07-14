@@ -295,40 +295,70 @@ def get_tables() -> dict:
 # 预处理规则（参数映射 + 自定义清洗，统一为正则替换规则）
 # ============================================================
 
-def _migrate_param_mapping_to_rules() -> None:
-    """首次启动迁移：把旧 param_mapping.json 转为 preprocess_rules.json。
+# 内置锁定规则（核心清洗，可见可开关但不可删除，防止误操作导致解析崩溃）
+# 这些规则从原 preprocess 固定核心阶段提取，现在暴露给用户但锁定删除。
+_DEFAULT_LOCKED_RULES = [
+    {
+        "id": "builtin-block-comment",
+        "name": "去块注释 /* */",
+        "pattern": r"/\*.*?\*/",
+        "replacement": "",
+        "enabled": True,
+        "builtin": True,
+        "locked": True,
+    },
+    {
+        "id": "builtin-line-comment",
+        "name": "去行注释 --",
+        "pattern": r"--[^\n]*",
+        "replacement": "",
+        "enabled": True,
+        "builtin": True,
+        "locked": True,
+    },
+]
 
-    每个 {param: value} 转成一条 builtin 规则，pattern 匹配 ${param}，
-    replacement 为实际值。迁移后 param_mapping.json 不再使用。
+
+def _init_default_rules() -> None:
+    """首次启动初始化：预置内置 locked 规则 + 迁移旧 param_mapping。
+
+    - 若 preprocess_rules.json 不存在：写入默认 locked 规则 + 旧 param_mapping 迁移
+    - 若已存在：检查是否缺少默认 locked 规则（版本升级时补齐），不覆盖用户改动
     """
-    if PREPROCESS_RULES_FILE.exists():
-        return  # 已有规则文件，不迁移
-    old = _read_json(PARAM_MAPPING_FILE, {})
-    if not old:
-        return  # 旧文件为空或不存在，留空规则文件让用户自己建
-    import re as _re
-    rules = []
-    for param, value in old.items():
-        if not (param and _re.fullmatch(r"\w+", param) and str(value).strip()):
-            continue
-        rules.append({
-            "id": f"param-{param}",
-            "name": f"参数映射: {param}",
-            "pattern": r"\$\{" + param + r"\}",
-            "replacement": str(value),
-            "enabled": True,
-            "builtin": True,
-        })
-    _write_json(PREPROCESS_RULES_FILE, rules)
+    existing = _read_json(PREPROCESS_RULES_FILE, [])
+    existing_ids = {r.get("id") for r in existing}
+
+    if not existing:
+        # 全新安装：预置默认 locked 规则 + 迁移旧 param_mapping
+        rules = [dict(r) for r in _DEFAULT_LOCKED_RULES]
+        old = _read_json(PARAM_MAPPING_FILE, {})
+        for param, value in old.items():
+            if param and re.fullmatch(r"\w+", param) and str(value).strip():
+                rules.append({
+                    "id": f"param-{param}",
+                    "name": f"参数映射: {param}",
+                    "pattern": r"\$\{" + param + r"\}",
+                    "replacement": str(value),
+                    "enabled": True,
+                    "builtin": True,
+                    "locked": False,
+                })
+        _write_json(PREPROCESS_RULES_FILE, rules)
+    else:
+        # 已有规则：补齐缺失的默认 locked 规则（版本升级场景）
+        missing = [r for r in _DEFAULT_LOCKED_RULES if r["id"] not in existing_ids]
+        if missing:
+            # locked 规则插在最前面（核心清洗先执行）
+            _write_json(PREPROCESS_RULES_FILE, missing + existing)
 
 
 def get_preprocess_rules() -> list[dict]:
     """返回预处理规则列表（按数组顺序执行）。
 
-    首次调用触发旧 param_mapping.json 的自动迁移。
-    每条规则: {id, name, pattern, replacement, enabled, builtin}
+    首次调用触发默认规则初始化 + 旧 param_mapping 迁移。
+    每条规则: {id, name, pattern, replacement, enabled, builtin, locked}
     """
-    _migrate_param_mapping_to_rules()
+    _init_default_rules()
     return _read_json(PREPROCESS_RULES_FILE, [])
 
 
@@ -336,9 +366,10 @@ def set_preprocess_rules(rules: list[dict]) -> list[dict]:
     """更新预处理规则（全量替换），在文件锁保护下写入。
 
     校验：每条规则 pattern 必须 re.compile 通过（非法正则拒绝）。
-    返回写入后的规则列表（非法规则已被过滤）。
+    locked 规则不可删除：若用户提交的列表缺少 locked 规则，自动从
+    _DEFAULT_LOCKED_RULES 补回（防止前端误删导致解析崩溃）。
+    返回写入后的规则列表。
     """
-    import re
     cleaned: list[dict] = []
     seen_ids: set[str] = set()
     for r in rules:
@@ -360,7 +391,19 @@ def set_preprocess_rules(rules: list[dict]) -> list[dict]:
             "replacement": str(r.get("replacement", "")),
             "enabled": bool(r.get("enabled", True)),
             "builtin": bool(r.get("builtin", False)),
+            "locked": bool(r.get("locked", False)),
         })
+    # locked 规则保护：用户提交的列表里若缺少某个 locked 规则，补回它
+    # （locked 规则的 enabled 状态尊重用户设置，但不可删除）
+    for default_r in _DEFAULT_LOCKED_RULES:
+        if default_r["id"] not in seen_ids:
+            # 用户删了 locked 规则 → 补回（保持文件里已有的 enabled 状态）
+            existing = _read_json(PREPROCESS_RULES_FILE, [])
+            existing_rule = next((r for r in existing if r.get("id") == default_r["id"]), None)
+            restored = dict(default_r)
+            if existing_rule:
+                restored["enabled"] = existing_rule.get("enabled", True)
+            cleaned.insert(0, restored)  # locked 规则插最前面
     with _store_lock():
         _write_json(PREPROCESS_RULES_FILE, cleaned)
     return cleaned
