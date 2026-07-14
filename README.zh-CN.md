@@ -37,7 +37,7 @@
 - **离线优先** —— 基于 `sqlglot` AST 静态解析，**无需数据库连接** 即可提取完整血缘
 - **表级 + 列级** —— 不仅看表间流转，还能点边查看 `目标列 ← 源列` 及变换表达式（`SUM(amount)`、`price*qty`）
 - **影响分析** —— 点击节点，高亮其全部上游链路（青色）和下游链路（橙色），菱形依赖完整覆盖
-- **参数化 SQL** —— 支持 ETL 模板占位符 `${icl_schema}`，配合全局映射表替换成实际 schema
+- **参数化 SQL** —— 支持 ETL 模板占位符 `${icl_schema}`，配合「预处理规则」替换成实际 schema（参数映射为内置规则特例）
 - **批量导入** —— 一次拖入多个 `.sql` 文件或 `.zip` 压缩包，每个文件成为独立脚本
 - **零安装部署** —— 便携版自带 Python 运行时，目标机双击即用
 
@@ -144,7 +144,7 @@ public.orders → public.order_report   操作：INSERT   语句 #1
 ### 其他
 
 - **搜索框**：模糊匹配表名/字段名，选中后自动聚焦 + 高亮
-- **参数映射**：配置 `${param}` → 实际值，分析时自动替换
+- **预处理规则**：配置正则替换规则（name/pattern/replacement/enabled），应对各种奇怪 SQL 格式；参数映射为内置规则特例（id 以 `param-` 前缀），分析时自动应用
 - **导入/导出**：一键备份/迁移全部血缘数据（JSON）
 - **图导出**：导出当前图谱为 PNG / 独立 HTML
 
@@ -171,8 +171,8 @@ public.orders → public.order_report   操作：INSERT   语句 #1
 datalineage_visualizer/
 ├── backend/
 │   ├── app/
-│   │   ├── api/           # FastAPI 路由（16 个 REST 端点）
-│   │   ├── services/      # 血缘提取、存储、参数替换（核心逻辑）
+│   │   ├── api/           # FastAPI 路由（17 个 REST 端点）
+│   │   ├── services/      # 血缘提取、存储、预处理规则（核心逻辑）
 │   │   ├── models/        # Pydantic 数据模型
 │   │   └── main.py        # FastAPI 应用 + 静态文件托管
 │   ├── tests/             # 222 个测试（覆盖率 94%）

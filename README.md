@@ -36,7 +36,7 @@ Modern data platforms (Dataphin, WhaleOps, cloud DataWorks, etc.) and databases 
 - **Offline-first** — static AST parsing via `sqlglot`, **no database connection required** to extract full lineage
 - **Table-level + Column-level** — not just table flow, click an edge to see `target column ← source columns` and transform expressions (`SUM(amount)`, `price*qty`)
 - **Impact analysis** — click a node to highlight all upstream (cyan) and downstream (orange) paths; diamond dependencies fully covered
-- **Parameterized SQL** — supports ETL template placeholders like `${icl_schema}`, replaced via a global mapping table
+- **Parameterized SQL** — supports ETL template placeholders like `${icl_schema}`, replaced via Preprocess Rules (param mapping is a built-in rule type)
 - **Batch import** — drag in multiple `.sql` files or a `.zip` archive; each file becomes an independent script
 - **Zero-install deployment** — portable edition bundles the Python runtime; just double-click on the target machine
 
@@ -139,7 +139,7 @@ Switch to the "Batch Import" tab in the "New Analysis" dialog, drag in multiple 
 ### Others
 
 - **Search box**: fuzzy-match table/column names; selecting one auto-focuses and highlights
-- **Parameter mapping**: configure `${param}` → actual value, auto-replaced during analysis
+- **Preprocess Rules**: configure regex replacement rules (name/pattern/replacement/enabled) to handle weird SQL formats; param mapping is a built-in rule type (id prefixed `param-`), auto-applied during analysis
 - **Import/Export**: one-click backup/migration of all lineage data (JSON)
 - **Graph export**: export the current graph as PNG / standalone HTML
 
@@ -166,8 +166,8 @@ Switch to the "Batch Import" tab in the "New Analysis" dialog, drag in multiple 
 LineagePuzzle/
 ├── backend/
 │   ├── app/
-│   │   ├── api/           # FastAPI routes (16 REST endpoints)
-│   │   ├── services/      # lineage extraction, storage, param substitution (core logic)
+│   │   ├── api/           # FastAPI routes (17 REST endpoints)
+│   │   ├── services/      # lineage extraction, storage, preprocess rules (core logic)
 │   │   ├── models/        # Pydantic data models
 │   │   └── main.py        # FastAPI app + static file hosting
 │   ├── tests/             # 222 tests (94% coverage)

@@ -42,7 +42,7 @@
 3. [核心流程](#3-核心流程)
 4. [功能详解](#4-功能详解)
 5. [血缘提取能力](#5-血缘提取能力)
-6. [参数映射](#6-参数映射)
+6. [预处理规则](#6-预处理规则)
 7. [API 参考](#7-api-参考)
 8. [存储设计](#8-存储设计)
 9. [部署](#9-部署)
@@ -95,7 +95,7 @@
 ┌──────────────────────────────────────────────────────────────────────┐
 │                          前端页面（React + antd v6）                    │
 │                                                                      │
-│  Header: [搜索框] [参数映射] [导入导出] [新建分析]                      │
+│  Header: [搜索框] [预处理规则] [导入导出] [新建分析]                    │
 │                                                                      │
 │  ┌──────────┐  ┌──────────────────────────┐  ┌──────────────────┐   │
 │  │ 脚本列表  │  │     全局/脚本血缘图谱      │  │  语句分段面板     │   │
@@ -116,7 +116,7 @@
 │                          │ sqlglot AST     │ │ data/            │    │
 │                          │ (纯静态,可离线)  │ │ ├── tables.json  │    │
 │                          └────────┬────────┘ │ ├── edges.jsonl  │    │
-│                                   │          │ ├── param_mapping│    │
+│                                   │          │ ├── preprocess_r.│    │
 │                          ┌────────▼────────┐ │ └── scripts/*.json│   │
 │                          │ DB 校验器(可选)  │ └─────────────────┘    │
 │                          │ INFO_SCHEMA     │                        │
@@ -145,7 +145,7 @@
 用户提交脚本
      │
      ▼
-步骤1: 参数替换   → ${param} 用全局映射表替换成实际值
+步骤1: 预处理规则 → 应用正则替换规则(参数映射为内置特例);${param} 替换为实际值
      │
      ▼
 步骤2: 预处理     → 去注释、压缩空格、去空行
@@ -229,15 +229,15 @@
 - 每个文件产出**独立脚本**（各自 analysis_id，可单独删除/重命名）
 - 部分文件失败不影响其他文件，失败的在提示中显示
 
-### 4.5 参数映射
+### 4.5 预处理规则
 
-见 [第 6 节](#6-参数映射)。
+见 [第 6 节](#6-预处理规则)。
 
 ### 4.6 导入/导出
 
 | 操作 | 说明 |
 |------|------|
-| 导出 | 一键导出全部数据（tables + edges + scripts + param_mapping）为 JSON 文件 |
+| 导出 | 一键导出全部数据（tables + edges + scripts + preprocess_rules）为 JSON 文件 |
 | 导入 | 用导出的 JSON 覆盖当前所有数据（会清空现有数据，需确认） |
 
 ### 4.7 图导出
@@ -297,29 +297,64 @@
 
 ---
 
-## 6. 参数映射
+## 6. 预处理规则
 
-ETL 脚本常用 `${icl_schema}`、`${batch_date}` 等模板占位符，sqlglot 无法直接解析（ParseError）。在预处理阶段替换。
+生产环境里的 SQL 脚本格式千奇百怪：`${icl_schema}` 模板占位符、特殊注释、ETL 工具注入的标记等，内置规则几乎不可能全覆盖。本模块把「参数映射」和「自定义清洗」统一为**正则替换规则**，用户可自行增减，应对各种奇怪格式。
+
+每条规则在 SQL 解析前对脚本文本执行一次 `re.sub(pattern, replacement)`。规则字段：
+
+| 字段 | 说明 |
+|------|------|
+| `name` | 规则名称（如「去单行注释」「参数映射: icl_schema」） |
+| `pattern` | Python 正则表达式（`re.sub` 第一个参数，支持捕获组） |
+| `replacement` | 替换文本，支持 `$1` `$2` 反向引用 |
+| `enabled` | 开关，关闭的规则在预处理时跳过 |
+| `builtin` | 内置标记（参数映射类规则为 `true`，前端蓝色标记区分） |
+
+**参数映射**已降级为规则的一种内置特例：每条参数映射对应一条 `id` 以 `param-` 前缀、`builtin=true` 的规则，`pattern` 形如 `\$\{param_name\}`。用户可像编辑普通规则一样编辑、关闭或删除它们。
 
 ### 6.1 配置方法
 
-点击 Header「参数映射」按钮，添加映射行：
+点击 Header「预处理规则」按钮，管理规则列表：
 
-| 参数名 | 实际值 |
-|--------|--------|
-| `icl_schema` | `ods` |
-| `env` | `prod` |
-| `src_schema` | `staging` |
+- 点击「添加规则」新增一条自定义清洗规则
+- 每条规则可填名称、正则、替换文本，并用开关启用/禁用
+- 内置规则（参数映射）以蓝色「内置」标记区分
+- 非法正则会在前端红色高亮，保存时被后端过滤
 
-### 6.2 替换规则
+示例规则：
 
-| 占位符 | 有映射 | 无映射 |
-|--------|--------|--------|
-| `${icl_schema}.orders` | `ods.orders` | `icl_schema.orders`（保留参数名） |
+| 名称 | pattern | replacement | 说明 |
+|------|---------|-------------|------|
+| 参数映射: icl_schema | `\$\{icl_schema\}` | `ods` | 内置，替换占位符 |
+| 参数映射: env | `\$\{env\}` | `prod` | 内置，替换占位符 |
+| 去 MySQL 注释 | `#[^\n]*` | (空) | 自定义，清洗 `#` 风格注释 |
+
+### 6.2 参数替换效果
+
+参数映射类规则的替换效果（`enabled=true` 时）：
+
+| 占位符 | 有规则 | 无规则（兜底） |
+|--------|--------|----------------|
+| `${icl_schema}.orders` | `ods.orders` | `icl_schema.orders`（兜底用参数名当标识符） |
 | `${schema}_${env}.report` | `dw_prod.report` | `schema_env.report` |
-| `WHERE dt = ${batch_date}` | `WHERE dt = <映射值>` | `WHERE dt = batch_date`（当列名，对血缘无影响） |
+| `WHERE dt = ${batch_date}` | `WHERE dt = <规则值>` | `WHERE dt = batch_date`（当列名，对血缘无影响） |
 
-> **注意**：参数映射在**分析新脚本时**生效。已有脚本的节点不会自动更新，需重新分析才能应用新映射。
+> **兜底机制**：即使未配置任何参数规则，`${param}` 也会被替换成参数名本身（当合法标识符），保证血缘仍可提取。
+
+### 6.3 执行流水线
+
+预处理分两阶段，规则只在阶段 A 执行：
+
+```
+阶段 A（可配置）→ 阶段 B（固定核心）→ 兜底
+  按规则顺序执行     去注释/DO block/事务      ${param}→参数名
+  正则替换           补分号/压缩空格
+```
+
+阶段 B 的去注释、DO block 提取、事务补分号是 splitter / sqlglot 正常工作的前提，不暴露给用户开关。
+
+> **注意**：预处理规则在**分析新脚本时**生效。已有脚本的节点不会自动更新，需重新分析才能应用新规则。
 
 ---
 
@@ -351,7 +386,8 @@ ETL 脚本常用 `${icl_schema}`、`${batch_date}` 等模板占位符，sqlglot 
 |------|------|------|
 | `/global-graph` | GET | 全局图谱（含 column_mappings） |
 | `/tables` | GET | 全局表注册表 |
-| `/param-mapping` | GET / PUT | 参数映射表 |
+| `/preprocess-rules` | GET / PUT | 预处理规则（正则替换规则；参数映射为内置类型） |
+| `/param-mapping` | GET / PUT | *(旧版，向后兼容，等价于 /preprocess-rules)* |
 | `/export` | GET | 导出全部数据 |
 | `/import` | POST | 导入数据（覆盖） |
 | `/health` | GET | 健康检查 |
@@ -366,7 +402,7 @@ ETL 脚本常用 `${icl_schema}`、`${batch_date}` 等模板占位符，sqlglot 
 backend/data/
 ├── tables.json          # 全局表注册表（schema.table 为 key，带 script_ids 反向索引）
 ├── edges.jsonl          # 全局血缘边（JSON Lines，追加写，带 column_mappings）
-├── param_mapping.json   # 全局参数映射表
+├── preprocess_rules.json # 预处理规则（正则替换；参数映射为内置类型）
 ├── store.lock           # 文件锁
 └── scripts/
     └── {id}.json        # 各脚本分析结果
@@ -384,6 +420,8 @@ backend/data/
 ### 向后兼容
 
 `VisEdge` / `GlobalEdge` 的 `column_mappings` 字段用 `Field(default_factory=list)`，旧数据（无此字段）反序列化为空数组，不报错。
+
+**参数映射自动迁移**：首次启动检测到旧 `param_mapping.json` 存在时，自动转为 `preprocess_rules.json` 中的 builtin 规则（每条 `{param: value}` → 一条 `id=param-{name}`、`pattern=\$\{name\}`、`builtin=true` 的规则）。迁移后旧文件不再使用。导入旧版导出的 JSON（含 `param_mapping` 字段而无 `preprocess_rules`）也会自动转换。
 
 ---
 
@@ -485,7 +523,7 @@ SELECT order_id, amount * 1.1, customer_name FROM tmp_order_detail;
 
 ### 示例 3：带参数占位符
 
-先配置参数映射 `icl_schema = ods`，再分析：
+先在「预处理规则」配置一条参数映射类规则 `${icl_schema}` → `ods`，再分析：
 
 ```sql
 INSERT INTO ${icl_schema}.summary (cust_id, total)
@@ -543,7 +581,7 @@ SELECT a.x FROM public.orders a JOIN reporting.orders b ON a.id = b.id;
 
 ### Q: 参数占位符 `${param}` 报错？
 
-sqlglot 无法直接解析 `${param}`。在 Header「参数映射」配置实际值，分析时自动替换。
+sqlglot 无法直接解析 `${param}`。在 Header「预处理规则」配置一条参数映射类规则（pattern 自动生成为 `\$\{param_name\}`），分析时自动替换。即使不配置，兜底机制也会把 `${param}` 替换成参数名本身当标识符。
 
 ### Q: 删除脚本后图谱还有残留节点？
 
@@ -573,4 +611,4 @@ sqlglot 无法直接解析 `${param}`。在 Header「参数映射」配置实际
 
 ### Q: 数据保存在哪？
 
-`backend/data/` 目录（tables.json / edges.jsonl / scripts/*.json）。备份此目录即备份所有分析结果。便携版在 `app/data/`。
+`backend/data/` 目录（tables.json / edges.jsonl / preprocess_rules.json / scripts/*.json）。备份此目录即备份所有分析结果。便携版在 `app/data/`。

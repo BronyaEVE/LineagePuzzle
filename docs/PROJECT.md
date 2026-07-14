@@ -11,7 +11,7 @@
 3. [Core Workflow](#3-core-workflow)
 4. [Feature Reference](#4-feature-reference)
 5. [Lineage Extraction Capabilities](#5-lineage-extraction-capabilities)
-6. [Parameter Mapping](#6-parameter-mapping)
+6. [Preprocess Rules](#6-preprocess-rules)
 7. [API Reference](#7-api-reference)
 8. [Storage Design](#8-storage-design)
 9. [Deployment](#9-deployment)
@@ -64,7 +64,7 @@ Traditional lineage tools require importing all scripts at once. This project ta
 ┌──────────────────────────────────────────────────────────────────────┐
 │                       Frontend (React + antd v6)                      │
 │                                                                      │
-│  Header: [Search] [Param Mapping] [Import/Export] [New Analysis]     │
+│  Header: [Search] [Preprocess Rules] [Import/Export] [New Analysis]  │
 │                                                                      │
 │  ┌──────────┐  ┌──────────────────────────┐  ┌──────────────────┐   │
 │  │ Script    │  │   Global / Script          │  │ Statement Panel  │   │
@@ -87,7 +87,7 @@ Traditional lineage tools require importing all scripts at once. This project ta
 │                          │ sqlglot AST     │ │ data/            │    │
 │                          │ (static, offline)│ │ ├── tables.json  │    │
 │                          └────────┬────────┘ │ ├── edges.jsonl  │    │
-│                                   │          │ ├── param_mapping│    │
+│                                   │          │ ├── preprocess_r.│    │
 │                          ┌────────▼────────┐ │ └── scripts/*.json│   │
 │                          │ DB Validator    │ └─────────────────┘    │
 │                          │ (optional)      │                        │
@@ -116,7 +116,7 @@ Traditional lineage tools require importing all scripts at once. This project ta
 User submits a script
      │
      ▼
-Step 1: Parameter substitution  → ${param} replaced with actual values from the global mapping table
+Step 1: Preprocess rules  → apply regex replacement rules (param mapping is a built-in type); ${param} replaced with actual values
      │
      ▼
 Step 2: Preprocessing           → strip comments, collapse spaces, drop blank lines
@@ -200,15 +200,15 @@ Switch to "Batch Import Files" in the "New Analysis" dialog:
 - Each file produces an **independent script** (its own `analysis_id`, individually deletable/renamable)
 - A partial failure of one file doesn't block others; failures are shown in the toast
 
-### 4.5 Parameter Mapping
+### 4.5 Preprocess Rules
 
-See [Section 6](#6-parameter-mapping).
+See [Section 6](#6-preprocess-rules).
 
 ### 4.6 Import / Export
 
 | Action | Description |
 |--------|-------------|
-| Export | One-click export of all data (tables + edges + scripts + param_mapping) as a JSON file |
+| Export | One-click export of all data (tables + edges + scripts + preprocess_rules) as a JSON file |
 | Import | Overwrite all current data with an exported JSON (clears existing data; confirmation required) |
 
 ### 4.7 Graph Export
@@ -268,29 +268,64 @@ Standalone module `column_lineage.py`, decoupled from table-level. Capability ma
 
 ---
 
-## 6. Parameter Mapping
+## 6. Preprocess Rules
 
-ETL scripts often use template placeholders like `${icl_schema}`, `${batch_date}` that sqlglot cannot parse directly (ParseError). They are replaced during preprocessing.
+SQL scripts in production come in all shapes: `${icl_schema}` template placeholders, special comments, ETL-tool-injected markers — built-in rules can hardly cover them all. This module unifies **parameter mapping** and **custom cleanup** into *regex replacement rules* that users can add/remove to handle any weird format.
+
+Each rule runs `re.sub(pattern, replacement)` on the script text before parsing. Rule fields:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Rule name (e.g. "Strip line comments", "Param: icl_schema") |
+| `pattern` | Python regex (first arg of `re.sub`; capture groups supported) |
+| `replacement` | Replacement text, supports `$1` `$2` backreferences |
+| `enabled` | Toggle; disabled rules are skipped during preprocessing |
+| `builtin` | Built-in flag (param-mapping rules are `true`; shown blue in UI) |
+
+**Parameter mapping** is now a built-in subtype of rule: each mapping entry corresponds to a rule with `id` prefixed `param-`, `builtin=true`, and `pattern` like `\$\{param_name\}`. Users can edit, disable, or delete them like any other rule.
 
 ### 6.1 Configuration
 
-Click the "Parameter Mapping" button in the Header, add mapping rows:
+Click the "Preprocess Rules" button in the Header to manage the rule list:
 
-| Param name | Actual value |
-|------------|--------------|
-| `icl_schema` | `ods` |
-| `env` | `prod` |
-| `src_schema` | `staging` |
+- Click "Add Rule" to create a custom cleanup rule
+- Each rule has name, regex, replacement text, and an enable toggle
+- Built-in rules (param mappings) are marked blue
+- Invalid regexes are highlighted red in the UI and filtered by the backend on save
 
-### 6.2 Replacement Rules
+Example rules:
 
-| Placeholder | With mapping | Without mapping |
-|-------------|--------------|-----------------|
-| `${icl_schema}.orders` | `ods.orders` | `icl_schema.orders` (param name kept) |
+| Name | pattern | replacement | Note |
+|------|---------|-------------|------|
+| Param: icl_schema | `\$\{icl_schema\}` | `ods` | built-in, replaces placeholder |
+| Param: env | `\$\{env\}` | `prod` | built-in, replaces placeholder |
+| Strip MySQL comments | `#[^\n]*` | (empty) | custom, cleans `#`-style comments |
+
+### 6.2 Parameter substitution effect
+
+Substitution behavior of param-mapping rules (when `enabled=true`):
+
+| Placeholder | With rule | Without rule (fallback) |
+|-------------|-----------|-------------------------|
+| `${icl_schema}.orders` | `ods.orders` | `icl_schema.orders` (falls back to param name as identifier) |
 | `${schema}_${env}.report` | `dw_prod.report` | `schema_env.report` |
-| `WHERE dt = ${batch_date}` | `WHERE dt = <mapped value>` | `WHERE dt = batch_date` (treated as column name; no impact on lineage) |
+| `WHERE dt = ${batch_date}` | `WHERE dt = <rule value>` | `WHERE dt = batch_date` (treated as column name; no lineage impact) |
 
-> **Note:** Parameter mapping takes effect when **analyzing new scripts**. Existing scripts' nodes are not auto-updated; you must re-analyze to apply new mappings.
+> **Fallback**: even with no param rules configured, `${param}` is replaced with the param name itself (as a valid identifier) so lineage can still be extracted.
+
+### 6.3 Execution pipeline
+
+Preprocessing has two phases; rules only run in phase A:
+
+```
+Phase A (configurable) → Phase B (fixed core) → Fallback
+  apply rules in order     strip comments/DO block/      ${param}→param name
+  regex substitution       transaction semicolons/whitespace
+```
+
+Phase B (comment stripping, DO block extraction, transaction semicolons) is a prerequisite for splitter / sqlglot and is not exposed for toggling.
+
+> **Note:** Preprocess rules take effect when **analyzing new scripts**. Existing scripts' nodes are not auto-updated; you must re-analyze to apply new rules.
 
 ---
 
@@ -322,7 +357,8 @@ All endpoints are prefixed with `/api`. Swagger UI: `http://localhost:8000/docs`
 |----------|--------|-------------|
 | `/global-graph` | GET | Global graph (with column_mappings) |
 | `/tables` | GET | Global table registry |
-| `/param-mapping` | GET / PUT | Parameter mapping table |
+| `/preprocess-rules` | GET / PUT | Preprocess rules (regex replacement rules; param mapping is a built-in type) |
+| `/param-mapping` | GET / PUT | *(legacy, backward-compat alias of /preprocess-rules)* |
 | `/export` | GET | Export all data |
 | `/import` | POST | Import data (overwrites) |
 | `/health` | GET | Health check |
@@ -337,7 +373,7 @@ All endpoints are prefixed with `/api`. Swagger UI: `http://localhost:8000/docs`
 backend/data/
 ├── tables.json          # Global table registry (schema.table as key, with script_ids reverse index)
 ├── edges.jsonl          # Global lineage edges (JSON Lines, append-only, with column_mappings)
-├── param_mapping.json   # Global parameter mapping table
+├── preprocess_rules.json # Preprocess rules (regex replacement; param mapping is a built-in type)
 ├── store.lock           # File lock
 └── scripts/
     └── {id}.json        # Each script's analysis result
@@ -355,6 +391,8 @@ backend/data/
 ### Backward Compatibility
 
 The `column_mappings` field of `VisEdge` / `GlobalEdge` uses `Field(default_factory=list)`, so old data (without this field) deserializes to an empty array without errors.
+
+**Param mapping auto-migration**: on first startup, if a legacy `param_mapping.json` is detected, it is automatically converted into builtin rules in `preprocess_rules.json` (each `{param: value}` becomes a rule with `id=param-{name}`, `pattern=\$\{name\}`, `builtin=true`). The old file is no longer used after migration. Importing a legacy export JSON (with `param_mapping` field but no `preprocess_rules`) also auto-converts.
 
 ---
 
@@ -456,7 +494,7 @@ SELECT order_id, amount * 1.1, customer_name FROM tmp_order_detail;
 
 ### Example 3: With parameter placeholders
 
-First configure parameter mapping `icl_schema = ods`, then analyze:
+First add a param-mapping preprocess rule `${icl_schema}` → `ods` in "Preprocess Rules", then analyze:
 
 ```sql
 INSERT INTO ${icl_schema}.summary (cust_id, total)
@@ -514,7 +552,7 @@ Database connection failure **auto-degrades to offline mode** and still returns 
 
 ### Q: Parameter placeholder `${param}` errors?
 
-sqlglot cannot parse `${param}` directly. Configure the actual value in Header → "Parameter Mapping"; it's auto-replaced during analysis.
+sqlglot cannot parse `${param}` directly. Add a param-mapping rule in Header → "Preprocess Rules" (pattern auto-generated as `\$\{param_name\}`); it's auto-replaced during analysis. Even without a rule, the fallback replaces `${param}` with the param name as a valid identifier.
 
 ### Q: Residual nodes in the graph after deleting a script?
 
@@ -544,4 +582,4 @@ Double-click `run.bat`, open :8000 in the browser, zero install. See [9.4 Portab
 
 ### Q: Where is data stored?
 
-The `backend/data/` directory (tables.json / edges.jsonl / scripts/*.json). Backing up this directory backs up all analysis results. The portable edition uses `app/data/`.
+The `backend/data/` directory (tables.json / edges.jsonl / preprocess_rules.json / scripts/*.json). Backing up this directory backs up all analysis results. The portable edition uses `app/data/`.
