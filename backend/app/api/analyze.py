@@ -177,13 +177,33 @@ async def get_param_mapping():
 
 @router.put("/param-mapping")
 async def set_param_mapping(mapping: dict):
-    """更新全局参数映射表（全量替换）。
+    """[已废弃] 更新全局参数映射表（全量替换）。
 
-    请求体：{"icl_schema": "ods", "env": "prod"}
-    分析时 ${icl_schema}.orders → ods.orders，${env} → prod。
-    key 必须是合法标识符（字母数字下划线），否则被过滤。
+    保留向后兼容。新代码应使用 PUT /preprocess-rules。
     """
     return store.set_param_mapping(mapping)
+
+
+# === 预处理规则（参数映射 + 自定义清洗，统一为正则替换规则）===
+
+@router.get("/preprocess-rules")
+async def get_preprocess_rules():
+    """获取预处理规则列表。
+
+    返回 [{id, name, pattern, replacement, enabled, builtin}, ...]。
+    规则按数组顺序在 preprocess 阶段 A 执行（仅 enabled=True 的）。
+    """
+    return store.get_preprocess_rules()
+
+
+@router.put("/preprocess-rules")
+async def set_preprocess_rules(rules: list[dict]):
+    """更新预处理规则（全量替换）。
+
+    请求体：规则数组。每条规则 pattern 必须 re.compile 通过（非法正则被拒绝）。
+    builtin=True 的规则通常由参数映射迁移而来，用户也可自定义 builtin 规则。
+    """
+    return store.set_preprocess_rules(rules)
 
 
 # === 导入导出 ===

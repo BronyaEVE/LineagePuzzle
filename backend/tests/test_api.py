@@ -58,9 +58,13 @@ def teardown_module():
 
 @pytest.fixture(autouse=True)
 def _clean_store():
-    """每个测试前清空数据目录，保证测试隔离（重写 tables/edges/清 scripts）。"""
+    """每个测试前清空数据目录，保证测试隔离（重写 tables/edges/rules/清 scripts）。"""
     store._write_json(store.TABLES_FILE, {})
     store._write_edges([])
+    # 清空预处理规则和参数映射（避免测试间污染）
+    store._write_json(store.PREPROCESS_RULES_FILE, [])
+    if store.PARAM_MAPPING_FILE.exists():
+        store.PARAM_MAPPING_FILE.unlink()
     # 清空 scripts 目录
     if store.SCRIPTS_DIR.exists():
         for f in store.SCRIPTS_DIR.glob("*.json"):
@@ -422,6 +426,56 @@ class TestParamMapping:
         data = r.json()
         assert "valid_name" in data
         assert "invalid-name" not in data
+
+
+class TestPreprocessRules:
+    """预处理规则 API（GET/PUT /preprocess-rules）"""
+
+    def test_get_empty(self):
+        r = client.get("/api/preprocess-rules")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_set_and_get(self):
+        rules = [
+            {"id": "r1", "name": "去注释", "pattern": "--[^\\n]*", "replacement": "", "enabled": True, "builtin": False},
+        ]
+        r = client.put("/api/preprocess-rules", json=rules)
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data) == 1
+        assert data[0]["id"] == "r1"
+        # 读回确认持久化
+        got = client.get("/api/preprocess-rules").json()
+        assert len(got) == 1
+        assert got[0]["pattern"] == "--[^\\n]*"
+
+    def test_invalid_regex_filtered(self):
+        """非法正则被后端过滤"""
+        rules = [
+            {"id": "ok", "pattern": "valid", "replacement": "", "enabled": True},
+            {"id": "bad", "pattern": "[invalid", "replacement": "", "enabled": True},
+        ]
+        r = client.put("/api/preprocess-rules", json=rules)
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data) == 1
+        assert data[0]["id"] == "ok"
+
+    def test_rules_take_effect_in_analyze(self):
+        """配置的规则在分析时生效（端到端）"""
+        # 配置参数映射规则
+        client.put("/api/preprocess-rules", json=[
+            {"id": "param-x", "name": "x", "pattern": "\\$\\{x\\}", "replacement": "ods", "enabled": True, "builtin": True},
+        ])
+        # 分析带 ${x} 的 SQL
+        r = client.post("/api/analyze", json={
+            "script": "INSERT INTO ${x}.t SELECT * FROM ${x}.s",
+        })
+        assert r.status_code == 200
+        lineages = r.json()["lineages"]
+        pairs = {(l["source_table"], l["target_table"]) for l in lineages}
+        assert ("ods.s", "ods.t") in pairs
 
 
 # ============================================================

@@ -29,8 +29,10 @@ TABLES_FILE = DATA_DIR / "tables.json"
 EDGES_FILE = DATA_DIR / "edges.jsonl"  # JSON Lines 格式
 SCRIPTS_DIR = DATA_DIR / "scripts"
 LOCK_FILE = DATA_DIR / "store.lock"
-# 全局参数映射表：${param} → 实际值，分析时用于替换 SQL 里的占位符
-PARAM_MAPPING_FILE = DATA_DIR / "param_mapping.json"
+# 预处理规则：把「参数映射」和「自定义清洗」统一为正则替换规则。
+# 旧 param_mapping.json 在首次启动时迁移到这里。
+PARAM_MAPPING_FILE = DATA_DIR / "param_mapping.json"  # 保留用于迁移检测，迁移后可删
+PREPROCESS_RULES_FILE = DATA_DIR / "preprocess_rules.json"
 
 # script_id 合法字符集：字母数字、下划线、连字符（analysis_id 是 uuid4，必然匹配）。
 # 用严格正则防止路径遍历（../、绝对路径、盘符等都会被拒绝）。
@@ -290,33 +292,119 @@ def get_tables() -> dict:
 
 
 # ============================================================
-# 全局参数映射（${param} → 实际值，分析时替换 SQL 占位符）
+# 预处理规则（参数映射 + 自定义清洗，统一为正则替换规则）
 # ============================================================
 
-def get_param_mapping() -> dict[str, str]:
-    """返回全局参数映射表 {param_name: actual_value}。
+def _migrate_param_mapping_to_rules() -> None:
+    """首次启动迁移：把旧 param_mapping.json 转为 preprocess_rules.json。
 
-    用于分析时把 SQL 里的 ${param} 占位符替换成实际值。
-    未配置时返回空 dict（${param} 会保留参数名本身作为标识符）。
+    每个 {param: value} 转成一条 builtin 规则，pattern 匹配 ${param}，
+    replacement 为实际值。迁移后 param_mapping.json 不再使用。
     """
-    return _read_json(PARAM_MAPPING_FILE, {})
+    if PREPROCESS_RULES_FILE.exists():
+        return  # 已有规则文件，不迁移
+    old = _read_json(PARAM_MAPPING_FILE, {})
+    if not old:
+        return  # 旧文件为空或不存在，留空规则文件让用户自己建
+    import re as _re
+    rules = []
+    for param, value in old.items():
+        if not (param and _re.fullmatch(r"\w+", param) and str(value).strip()):
+            continue
+        rules.append({
+            "id": f"param-{param}",
+            "name": f"参数映射: {param}",
+            "pattern": r"\$\{" + param + r"\}",
+            "replacement": str(value),
+            "enabled": True,
+            "builtin": True,
+        })
+    _write_json(PREPROCESS_RULES_FILE, rules)
+
+
+def get_preprocess_rules() -> list[dict]:
+    """返回预处理规则列表（按数组顺序执行）。
+
+    首次调用触发旧 param_mapping.json 的自动迁移。
+    每条规则: {id, name, pattern, replacement, enabled, builtin}
+    """
+    _migrate_param_mapping_to_rules()
+    return _read_json(PREPROCESS_RULES_FILE, [])
+
+
+def set_preprocess_rules(rules: list[dict]) -> list[dict]:
+    """更新预处理规则（全量替换），在文件锁保护下写入。
+
+    校验：每条规则 pattern 必须 re.compile 通过（非法正则拒绝）。
+    返回写入后的规则列表（非法规则已被过滤）。
+    """
+    import re
+    cleaned: list[dict] = []
+    seen_ids: set[str] = set()
+    for r in rules:
+        rid = str(r.get("id", "")).strip()
+        pattern = str(r.get("pattern", ""))
+        if not rid or rid in seen_ids:
+            continue  # id 必填且唯一
+        if not pattern:
+            continue  # pattern 必填
+        try:
+            re.compile(pattern)
+        except re.error:
+            continue  # 非法正则拒绝
+        seen_ids.add(rid)
+        cleaned.append({
+            "id": rid,
+            "name": str(r.get("name", "")).strip()[:100],
+            "pattern": pattern,
+            "replacement": str(r.get("replacement", "")),
+            "enabled": bool(r.get("enabled", True)),
+            "builtin": bool(r.get("builtin", False)),
+        })
+    with _store_lock():
+        _write_json(PREPROCESS_RULES_FILE, cleaned)
+    return cleaned
+
+
+# 旧接口保留向后兼容（简化实现：直接读写 preprocess_rules 的参数子集）
+def get_param_mapping() -> dict[str, str]:
+    """[已废弃] 返回参数映射。从 preprocess_rules 里筛 id 以 'param-' 开头的规则反解。"""
+    rules = get_preprocess_rules()
+    mapping: dict[str, str] = {}
+    for r in rules:
+        rid = r.get("id", "")
+        if rid.startswith("param-") and r.get("builtin"):
+            # id 格式 param-{name}，name 即参数名
+            param_name = rid[len("param-"):]
+            if re.fullmatch(r"\w+", param_name):
+                mapping[param_name] = r.get("replacement", "")
+    return mapping
 
 
 def set_param_mapping(mapping: dict[str, str]) -> dict[str, str]:
-    """更新全局参数映射表（全量替换），在文件锁保护下写入。
-
-    mapping: {param_name: actual_value}，如 {'icl_schema': 'ods', 'env': 'prod'}
-    返回写入后的完整映射表。
-    """
-    with _store_lock():
-        # 过滤掉空值和非法 key（key 必须是合法标识符，便于 regex \w+ 匹配）
-        import re
-        cleaned = {
-            k: str(v) for k, v in mapping.items()
-            if k and re.fullmatch(r"\w+", k) and str(v).strip()
-        }
-        _write_json(PARAM_MAPPING_FILE, cleaned)
-    return cleaned
+    """[已废弃] 更新参数映射（全量替换参数规则，保留非参数的自定义规则）。"""
+    cleaned_input = {
+        k: str(v) for k, v in mapping.items()
+        if k and re.fullmatch(r"\w+", k) and str(v).strip()
+    }
+    rules = get_preprocess_rules()
+    # 保留非参数规则（id 不以 param- 开头，或不是 builtin）
+    non_param_rules = [
+        r for r in rules
+        if not (r.get("id", "").startswith("param-") and r.get("builtin"))
+    ]
+    # 追加新的参数规则
+    for k, v in cleaned_input.items():
+        non_param_rules.append({
+            "id": f"param-{k}",
+            "name": f"参数映射: {k}",
+            "pattern": r"\$\{" + k + r"\}",
+            "replacement": v,
+            "enabled": True,
+            "builtin": True,
+        })
+    set_preprocess_rules(non_param_rules)
+    return cleaned_input
 
 
 # ============================================================
@@ -342,6 +430,8 @@ def export_all() -> dict:
         "tables": _read_json(TABLES_FILE, {}),
         "edges": _read_edges(),
         "scripts": scripts,
+        "preprocess_rules": get_preprocess_rules(),
+        # 向后兼容：旧版导入文件里有 param_mapping 字段，迁移逻辑会处理
         "param_mapping": get_param_mapping(),
     }
 
@@ -362,8 +452,24 @@ def import_all(payload: dict) -> None:
             f.unlink()
         for sid, data in payload.get("scripts", {}).items():
             _write_json(SCRIPTS_DIR / f"{sid}.json", data)
-        # param_mapping（绕过 set_param_mapping 的锁，因为已在锁内）
-        _write_json(PARAM_MAPPING_FILE, payload.get("param_mapping", {}))
+        # preprocess_rules（绕过 set_preprocess_rules 的锁，因为已在锁内）
+        # 兼容旧版导入：若无 preprocess_rules 字段但有 param_mapping，走迁移
+        if "preprocess_rules" in payload:
+            _write_json(PREPROCESS_RULES_FILE, payload.get("preprocess_rules", []))
+        elif "param_mapping" in payload:
+            # 旧版导入文件：把 param_mapping 转为 builtin 规则
+            _write_json(PREPROCESS_RULES_FILE, [
+                {
+                    "id": f"param-{k}",
+                    "name": f"参数映射: {k}",
+                    "pattern": r"\$\{" + k + r"\}",
+                    "replacement": str(v),
+                    "enabled": True,
+                    "builtin": True,
+                }
+                for k, v in payload.get("param_mapping", {}).items()
+                if k and re.fullmatch(r"\w+", k) and str(v).strip()
+            ])
 
 
 # ============================================================

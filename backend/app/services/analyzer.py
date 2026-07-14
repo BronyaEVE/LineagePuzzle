@@ -24,9 +24,9 @@ def analyze(script: str, db_config: DatabaseConfig | None) -> AnalysisResult:
     不参与血缘提取（不再执行 EXPLAIN）。DB 连接失败时降级为 ast_only。
     """
 
-    # 步骤1+2: 预处理（含 ${param} 占位符替换）和拆分
-    param_mapping = store.get_param_mapping()
-    cleaned = preprocess(script, param_mapping=param_mapping)
+    # 步骤1+2: 预处理（含参数映射规则 + 自定义清洗规则）和拆分
+    rules = store.get_preprocess_rules()
+    cleaned = preprocess(script, rules=rules)
     group = split_statements(cleaned, original_script=script)
 
     # 步骤3: 提取血缘关系（纯 AST，不依赖 DB）

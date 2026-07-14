@@ -20,6 +20,18 @@ export interface CorrectStatementRequest {
   tables_modified: string[];
 }
 
+/** 单条预处理规则（正则替换）。
+ * 把「参数映射」和「自定义清洗」统一为规则。分析前按数组顺序执行 re.sub(pattern, replacement)。
+ */
+export interface PreprocessRule {
+  id: string;
+  name: string;
+  pattern: string;        // Python 正则（后端 re.sub 用）
+  replacement: string;    // 替换文本，支持 $1 $2 反向引用
+  enabled: boolean;
+  builtin: boolean;       // 内置规则（参数映射迁移而来，或系统预置）
+}
+
 // === Response Types ===
 
 export type StatementType = "CREATE" | "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "UNKNOWN";

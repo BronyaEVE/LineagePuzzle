@@ -1,6 +1,6 @@
 import type {
   AnalysisResult, AnalyzeRequest, DatabaseConfig,
-  ScriptSummary, GlobalGraph, ImpactAnalysis,
+  ScriptSummary, GlobalGraph, ImpactAnalysis, PreprocessRule,
 } from "../types";
 
 const API_BASE = "/api";
@@ -96,17 +96,17 @@ export async function getGlobalGraph(): Promise<GlobalGraph> {
   return request<GlobalGraph>(`${API_BASE}/global-graph`);
 }
 
-// === 参数映射 ===
+// === 预处理规则（参数映射 + 自定义清洗，统一为正则替换规则）===
 
-export async function getParamMapping(): Promise<Record<string, string>> {
-  return request<Record<string, string>>(`${API_BASE}/param-mapping`);
+export async function getPreprocessRules(): Promise<PreprocessRule[]> {
+  return request<PreprocessRule[]>(`${API_BASE}/preprocess-rules`);
 }
 
-export async function setParamMapping(mapping: Record<string, string>): Promise<Record<string, string>> {
-  return request<Record<string, string>>(`${API_BASE}/param-mapping`, {
+export async function setPreprocessRules(rules: PreprocessRule[]): Promise<PreprocessRule[]> {
+  return request<PreprocessRule[]>(`${API_BASE}/preprocess-rules`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(mapping),
+    body: JSON.stringify(rules),
   });
 }
 

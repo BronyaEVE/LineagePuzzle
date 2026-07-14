@@ -39,3 +39,24 @@ class BatchAnalyzeRequest(BaseModel):
     """
     files: list[BatchFileItem] = Field(..., min_length=1)
     database_config: DatabaseConfig | None = None
+
+
+class PreprocessRule(BaseModel):
+    """单条预处理规则。
+
+    预处理模块把「参数映射」和「自定义清洗」统一为「正则替换规则」。
+    每条规则在 SQL 解析前对脚本文本执行一次 re.sub(pattern, replacement)。
+
+    - id: 规则唯一标识（前端用 uuid 生成），用于开关/删除定位
+    - name: 用户可读名称（如 "去单行注释"、"参数映射: icl_schema"）
+    - pattern: Python 正则表达式（re.sub 第一个参数）
+    - replacement: 替换文本，支持 $1 $2 反向引用（re.sub 第二个参数）
+    - enabled: 是否启用（关闭的规则在 preprocess 时跳过）
+    - builtin: 是否内置规则（用于前端区分样式 + "恢复默认"）
+    """
+    id: str = Field(..., min_length=1)
+    name: str = Field("", max_length=100)
+    pattern: str = Field(..., min_length=1)
+    replacement: str = Field("")
+    enabled: bool = True
+    builtin: bool = False

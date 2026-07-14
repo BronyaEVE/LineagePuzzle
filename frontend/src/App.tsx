@@ -8,16 +8,16 @@ import StatementPanel from "./components/StatementPanel";
 import LineageGraph from "./components/LineageGraph";
 import type { FocusTarget } from "./components/LineageGraph";
 import SearchBox, { type SearchTarget } from "./components/SearchBox";
-import ParamMappingConfig from "./components/ParamMappingConfig";
+import PreprocessRulesConfig from "./components/PreprocessRulesConfig";
 import BatchImport from "./components/BatchImport";
 import {
   submitAnalysis, listScripts, getScript, deleteScript,
-  renameScript, getGlobalGraph, getParamMapping, setParamMapping,
+  renameScript, getGlobalGraph, getPreprocessRules, setPreprocessRules,
   exportData, importData,
 } from "./api/client";
 import type {
   DatabaseConfig as DatabaseConfigType, AnalysisResult,
-  ScriptSummary, GlobalGraph,
+  ScriptSummary, GlobalGraph, PreprocessRule,
 } from "./types";
 
 const { Header, Content } = Layout;
@@ -48,12 +48,11 @@ function App() {
     host: "localhost", port: 5432, database: "", username: "", password: "",
   });
 
-  // 参数映射配置（${param} → 实际值，全局生效）
-  // paramMapping 是本地编辑草稿，setParamMappingDraft 更新草稿；
-  // 保存时调 import 的 setParamMapping（API）推送到后端
-  const [paramModalOpen, setParamModalOpen] = useState(false);
-  const [paramMapping, setParamMappingDraft] = useState<Record<string, string>>({});
-  const [paramLoading, setParamLoading] = useState(false);
+  // 预处理规则配置（参数映射 + 自定义清洗，统一为正则替换规则）
+  // preprocessRules 是本地编辑草稿；保存时调 setPreprocessRules（API）推送到后端
+  const [rulesModalOpen, setRulesModalOpen] = useState(false);
+  const [preprocessRules, setPreprocessRulesDraft] = useState<PreprocessRule[]>([]);
+  const [rulesLoading, setRulesLoading] = useState(false);
 
   // === 加载数据 ===
   const refreshAll = useCallback(async () => {
@@ -147,30 +146,30 @@ function App() {
     }
   };
 
-  // === 参数映射：打开时拉取，保存时推送 ===
-  const handleOpenParamMapping = async () => {
-    setParamModalOpen(true);
+  // === 预处理规则：打开时拉取，保存时推送 ===
+  const handleOpenRules = async () => {
+    setRulesModalOpen(true);
     try {
-      const mapping = await getParamMapping();
-      setParamMappingDraft(mapping);
+      const rules = await getPreprocessRules();
+      setPreprocessRulesDraft(rules);
     } catch (e: unknown) {
-      message.error(errMsg(e, "获取参数映射失败"));
+      message.error(errMsg(e, "获取预处理规则失败"));
     }
   };
 
-  const handleSaveParamMapping = async () => {
-    setParamLoading(true);
+  const handleSaveRules = async () => {
+    setRulesLoading(true);
     try {
-      await setParamMapping(paramMapping);
+      await setPreprocessRules(preprocessRules);
       message.success({
-        content: "参数映射已保存。重新分析脚本后，新映射才会生效（已有脚本的节点不会自动更新）",
+        content: "预处理规则已保存。重新分析脚本后，新规则才会生效（已有脚本的节点不会自动更新）",
         duration: 5,
       });
-      setParamModalOpen(false);
+      setRulesModalOpen(false);
     } catch (e: unknown) {
-      message.error(errMsg(e, "保存参数映射失败"));
+      message.error(errMsg(e, "保存预处理规则失败"));
     } finally {
-      setParamLoading(false);
+      setRulesLoading(false);
     }
   };
 
@@ -276,10 +275,10 @@ function App() {
             />
             <Button
               icon={<SettingOutlined />}
-              onClick={handleOpenParamMapping}
+              onClick={handleOpenRules}
               style={{ background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,0.3)" }}
             >
-              参数映射
+              预处理规则
             </Button>
             <Button
               type="primary"
@@ -383,19 +382,19 @@ function App() {
         )}
       </Modal>
 
-      {/* 参数映射弹窗 */}
+      {/* 预处理规则弹窗 */}
       <Modal
-        title="参数映射配置"
-        open={paramModalOpen}
-        onCancel={() => setParamModalOpen(false)}
-        onOk={handleSaveParamMapping}
-        confirmLoading={paramLoading}
+        title="预处理规则配置"
+        open={rulesModalOpen}
+        onCancel={() => setRulesModalOpen(false)}
+        onOk={handleSaveRules}
+        confirmLoading={rulesLoading}
         okText="保存"
         cancelText="取消"
-        width={560}
+        width={760}
         destroyOnHidden
       >
-        <ParamMappingConfig value={paramMapping} onChange={setParamMappingDraft} />
+        <PreprocessRulesConfig value={preprocessRules} onChange={setPreprocessRulesDraft} />
       </Modal>
     </ConfigProvider>
   );

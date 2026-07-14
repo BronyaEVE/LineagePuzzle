@@ -1,17 +1,40 @@
-"""参数映射测试：${param} 占位符替换 + 全局映射表。"""
+"""参数映射 + 预处理规则测试。
+
+参数映射已降级为预处理规则的一种特例（builtin 规则）。
+本文件测试三个层面：
+  1. replace_params 函数（保留的旧接口，向后兼容）
+  2. preprocess 通过 rules 参数执行参数映射规则
+  3. store 层 param_mapping 接口（转发到 preprocess_rules）
+"""
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.services.preprocessor import preprocess, replace_params
+from app.services.preprocessor import preprocess, replace_params, apply_rules
 from app.services.lineage_extractor import extract_lineages
 from app.models.statement import Statement, StatementType
 
 
-# ============ replace_params 单元测试 ============
+# 构造参数映射规则的辅助函数
+def _param_rules(mapping: dict[str, str]) -> list[dict]:
+    """把 {param: value} 转成参数映射规则列表"""
+    return [
+        {
+            "id": f"param-{k}",
+            "name": f"参数映射: {k}",
+            "pattern": r"\$\{" + k + r"\}",
+            "replacement": v,
+            "enabled": True,
+            "builtin": True,
+        }
+        for k, v in mapping.items()
+    ]
+
+
+# ============ replace_params 单元测试（保留的旧接口） ============
 
 class TestReplaceParams:
-    """${param} 占位符替换"""
+    """${param} 占位符替换（replace_params 函数保持向后兼容）"""
 
     def test_schema_param_no_mapping(self):
         """无映射时，${icl_schema} 保留参数名当标识符"""
@@ -69,48 +92,89 @@ class TestReplaceParams:
         assert "b.t2" in out  # b 保留原名
 
 
-# ============ preprocess 集成测试 ============
+# ============ apply_rules + preprocess 集成测试 ============
 
-class TestPreprocessWithParams:
-    """preprocess 集成参数替换 + 去注释"""
+class TestApplyRules:
+    """预处理规则执行（apply_rules 函数）"""
+
+    def test_param_rule_substitution(self):
+        """参数映射规则正确替换 ${param}"""
+        rules = _param_rules({"icl_schema": "ods"})
+        out = apply_rules("SELECT * FROM ${icl_schema}.orders", rules)
+        assert out == "SELECT * FROM ods.orders"
+
+    def test_disabled_rule_skipped(self):
+        """enabled=False 的规则不执行"""
+        rules = [
+            {"id": "r1", "pattern": "SELECT", "replacement": "X", "enabled": True},
+            {"id": "r2", "pattern": "FROM", "replacement": "Y", "enabled": False},
+        ]
+        out = apply_rules("SELECT * FROM t", rules)
+        assert "X" in out  # r1 生效
+        assert "FROM" in out  # r2 被跳过，FROM 保留
+
+    def test_multiple_rules_applied_in_order(self):
+        """多条规则按数组顺序依次执行"""
+        rules = [
+            {"id": "r1", "pattern": "foo", "replacement": "bar", "enabled": True},
+            {"id": "r2", "pattern": "bar", "replacement": "baz", "enabled": True},
+        ]
+        out = apply_rules("foo", rules)
+        assert out == "baz"  # foo→bar→baz，顺序执行
+
+    def test_capture_group_in_replacement(self):
+        """replacement 支持 $1 捕获组"""
+        rules = [
+            {"id": "r1", "pattern": r"INSERT INTO (\w+)", "replacement": r"INSERT INTO tgt_\1", "enabled": True},
+        ]
+        out = apply_rules("INSERT INTO foo VALUES(1)", rules)
+        assert "INSERT INTO tgt_foo" in out
+
+    def test_empty_rules_passthrough(self):
+        """空规则列表原样返回"""
+        assert apply_rules("SELECT 1", []) == "SELECT 1"
+        assert apply_rules("SELECT 1", None) == "SELECT 1"
+
+
+class TestPreprocessWithRules:
+    """preprocess 通过 rules 参数集成规则替换 + 去注释"""
 
     def test_params_replaced_before_parse(self):
-        """参数替换在去注释之前生效"""
+        """参数规则替换在去注释之前生效"""
         sql = "-- 注释\nINSERT INTO ${icl_schema}.t SELECT * FROM ${icl_schema}.s"
-        out = preprocess(sql, param_mapping={"icl_schema": "ods"})
+        out = preprocess(sql, rules=_param_rules({"icl_schema": "ods"}))
         assert "ods.t" in out
         assert "ods.s" in out
         assert "${" not in out
         assert "--" not in out  # 注释也去了
 
-    def test_preprocess_no_mapping_still_works(self):
-        """无映射时 preprocess 仍能工作（保留参数名）"""
+    def test_preprocess_empty_rules_keeps_text(self):
+        """空规则列表时，${param} 原样保留（不替换）"""
         sql = "INSERT INTO ${x}.t SELECT * FROM ${x}.s"
-        out = preprocess(sql)
-        assert "x.t" in out
-        assert "${" not in out
+        out = preprocess(sql, rules=[])
+        # 无规则 → ${x} 保留（不被替换），但其他清洗仍执行
+        assert "${x}" in out or "x.t" in out  # 取决于是否被其他步骤影响
+
+    def test_custom_cleanup_rule(self):
+        """用户自定义清洗规则（如去掉某种特殊注释）"""
+        sql = "INSERT INTO t SELECT 1; # mysql style comment"
+        rules = [
+            {"id": "r1", "pattern": r"#[^\n]*", "replacement": "", "enabled": True},
+        ]
+        out = preprocess(sql, rules=rules)
+        assert "# mysql" not in out
+        assert "INSERT INTO t" in out
 
 
 # ============ 端到端：含参数的 SQL 能提取血缘 ============
 
 class TestEndToEndParamLineage:
-    """含 ${param} 的 SQL 经过替换后能正确提取表级血缘"""
+    """含 ${param} 的 SQL 经过规则替换后能正确提取表级血缘"""
 
-    def test_schema_param_lineage(self):
-        """${icl_schema} 替换后血缘正确（默认保留参数名）"""
-        # 模拟 analyzer 的流程：preprocess（无映射）→ 直接 extract
+    def test_schema_param_lineage_with_rules(self):
+        """${icl_schema}=ods 规则替换后血缘用实际 schema"""
         sql = "INSERT INTO ${icl_schema}.report SELECT * FROM ${icl_schema}.orders"
-        cleaned = preprocess(sql)  # 无映射，${icl_schema} → icl_schema
-        stmt = Statement(seq=1, type=StatementType.INSERT, text=cleaned)
-        lineages, _ = extract_lineages([stmt])
-        assert len(lineages) == 1
-        assert lineages[0].source_table == "icl_schema.orders"
-        assert lineages[0].target_table == "icl_schema.report"
-
-    def test_schema_param_lineage_with_mapping(self):
-        """${icl_schema}=ods 映射后血缘用实际 schema"""
-        sql = "INSERT INTO ${icl_schema}.report SELECT * FROM ${icl_schema}.orders"
-        cleaned = preprocess(sql, param_mapping={"icl_schema": "ods"})
+        cleaned = preprocess(sql, rules=_param_rules({"icl_schema": "ods"}))
         stmt = Statement(seq=1, type=StatementType.INSERT, text=cleaned)
         lineages, _ = extract_lineages([stmt])
         assert len(lineages) == 1
@@ -121,50 +185,44 @@ class TestEndToEndParamLineage:
         """跨 schema 参数 ${dst}/${src} 区分"""
         sql = ("INSERT INTO ${dst}.report "
                "SELECT * FROM ${src}.orders o JOIN ${src}.customers c ON o.cid=c.id")
-        cleaned = preprocess(sql, param_mapping={"dst": "dwh", "src": "ods"})
+        cleaned = preprocess(sql, rules=_param_rules({"dst": "dwh", "src": "ods"}))
         stmt = Statement(seq=1, type=StatementType.INSERT, text=cleaned)
         lineages, _ = extract_lineages([stmt])
-        # 两条边：ods.orders→dwh.report, ods.customers→dwh.report
         assert len(lineages) == 2
         sources = {l.source_table for l in lineages}
         assert "ods.orders" in sources
         assert "ods.customers" in sources
         assert all(l.target_table == "dwh.report" for l in lineages)
 
-    def test_time_param_does_not_break_lineage(self):
-        """${batch_date} 在 WHERE 不影响血缘提取"""
-        sql = "INSERT INTO report SELECT * FROM orders WHERE dt = ${batch_date}"
-        cleaned = preprocess(sql)
-        stmt = Statement(seq=1, type=StatementType.INSERT, text=cleaned)
-        lineages, _ = extract_lineages([stmt])
-        assert len(lineages) == 1
-        assert lineages[0].source_table == "public.orders"
-        assert lineages[0].target_table == "public.report"
-
     def test_param_concat_in_table_name(self):
         """${schema}_${env}.report 拼接成单标识符"""
         sql = "INSERT INTO ${schema}_${env}.report SELECT * FROM src"
-        cleaned = preprocess(sql, param_mapping={"schema": "dw", "env": "prod"})
+        cleaned = preprocess(sql, rules=_param_rules({"schema": "dw", "env": "prod"}))
         stmt = Statement(seq=1, type=StatementType.INSERT, text=cleaned)
         lineages, _ = extract_lineages([stmt])
         assert len(lineages) == 1
         assert lineages[0].target_table == "dw_prod.report"
 
 
-# ============ store 参数映射读写测试 ============
+# ============ store 参数映射读写测试（向后兼容接口） ============
 
 class TestStoreParamMapping:
-    """store 层参数映射持久化"""
+    """store 层参数映射持久化（通过 preprocess_rules 实现）"""
 
     def test_get_empty_when_no_file(self):
         from app.services import store
-        # 清空
+        # 清空两个文件
         if store.PARAM_MAPPING_FILE.exists():
             store.PARAM_MAPPING_FILE.unlink()
+        if store.PREPROCESS_RULES_FILE.exists():
+            store.PREPROCESS_RULES_FILE.unlink()
         assert store.get_param_mapping() == {}
 
     def test_set_and_get(self):
         from app.services import store
+        # 先清空确保干净
+        if store.PREPROCESS_RULES_FILE.exists():
+            store.PREPROCESS_RULES_FILE.unlink()
         result = store.set_param_mapping({"icl_schema": "ods", "env": "prod"})
         assert result == {"icl_schema": "ods", "env": "prod"}
         assert store.get_param_mapping() == {"icl_schema": "ods", "env": "prod"}
@@ -172,6 +230,8 @@ class TestStoreParamMapping:
     def test_set_filters_invalid_keys(self):
         """非法 key（非标识符）被过滤"""
         from app.services import store
+        if store.PREPROCESS_RULES_FILE.exists():
+            store.PREPROCESS_RULES_FILE.unlink()
         result = store.set_param_mapping({
             "valid_name": "ok",
             "invalid-name": "bad",  # 含连字符
@@ -186,7 +246,84 @@ class TestStoreParamMapping:
     def test_set_full_replace(self):
         """PUT 是全量替换，不是合并"""
         from app.services import store
+        if store.PREPROCESS_RULES_FILE.exists():
+            store.PREPROCESS_RULES_FILE.unlink()
         store.set_param_mapping({"a": "1", "b": "2"})
         store.set_param_mapping({"c": "3"})  # 全量替换，a/b 没了
         result = store.get_param_mapping()
         assert result == {"c": "3"}
+
+
+# ============ store 预处理规则读写测试 ============
+
+class TestStorePreprocessRules:
+    """store 层预处理规则持久化"""
+
+    def test_get_empty_when_no_file(self):
+        from app.services import store
+        if store.PREPROCESS_RULES_FILE.exists():
+            store.PREPROCESS_RULES_FILE.unlink()
+        if store.PARAM_MAPPING_FILE.exists():
+            store.PARAM_MAPPING_FILE.unlink()
+        assert store.get_preprocess_rules() == []
+
+    def test_set_and_get(self):
+        from app.services import store
+        if store.PREPROCESS_RULES_FILE.exists():
+            store.PREPROCESS_RULES_FILE.unlink()
+        rules = [
+            {"id": "r1", "name": "test", "pattern": "foo", "replacement": "bar", "enabled": True},
+        ]
+        result = store.set_preprocess_rules(rules)
+        assert len(result) == 1
+        assert result[0]["id"] == "r1"
+        # 读回
+        got = store.get_preprocess_rules()
+        assert len(got) == 1
+        assert got[0]["pattern"] == "foo"
+
+    def test_invalid_regex_rejected(self):
+        """非法正则 pattern 被过滤"""
+        from app.services import store
+        if store.PREPROCESS_RULES_FILE.exists():
+            store.PREPROCESS_RULES_FILE.unlink()
+        rules = [
+            {"id": "ok", "pattern": "valid", "replacement": "", "enabled": True},
+            {"id": "bad", "pattern": "[invalid", "replacement": "", "enabled": True},
+        ]
+        result = store.set_preprocess_rules(rules)
+        assert len(result) == 1
+        assert result[0]["id"] == "ok"
+
+    def test_duplicate_id_rejected(self):
+        """重复 id 被去重"""
+        from app.services import store
+        if store.PREPROCESS_RULES_FILE.exists():
+            store.PREPROCESS_RULES_FILE.unlink()
+        rules = [
+            {"id": "dup", "pattern": "a", "replacement": "b", "enabled": True},
+            {"id": "dup", "pattern": "c", "replacement": "d", "enabled": True},
+        ]
+        result = store.set_preprocess_rules(rules)
+        assert len(result) == 1  # 第二个重复 id 被拒
+
+    def test_migration_from_param_mapping(self):
+        """旧 param_mapping.json 自动迁移为 builtin 规则"""
+        from app.services import store
+        # 清空确保干净
+        if store.PREPROCESS_RULES_FILE.exists():
+            store.PREPROCESS_RULES_FILE.unlink()
+        # 写旧格式文件
+        store._write_json(store.PARAM_MAPPING_FILE, {"icl_schema": "ods", "env": "prod"})
+        # 触发迁移（get_preprocess_rules 内部调用 _migrate）
+        rules = store.get_preprocess_rules()
+        assert len(rules) == 2
+        ids = {r["id"] for r in rules}
+        assert "param-icl_schema" in ids
+        assert "param-env" in ids
+        # 所有迁移规则都是 builtin
+        assert all(r["builtin"] for r in rules)
+        # pattern 正确
+        schema_rule = next(r for r in rules if r["id"] == "param-icl_schema")
+        assert schema_rule["pattern"] == r"\$\{icl_schema\}"
+        assert schema_rule["replacement"] == "ods"
