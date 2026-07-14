@@ -129,6 +129,9 @@ class TestImpactAnalysis:
         中间环节边，导致前端 A→B 不高亮（误导用户以为 A→B 与 C 无关）。
         改用 all_simple_paths 后，A→C 的两条路径 [A,C] 和 [A,B,C] 都返回，
         前端据此把 A→C、B→C、A→B 三条边都高亮。
+
+        注意：表名归一化后不带引号的大写折叠成小写（PostgreSQL 语义），
+        所以 public.A → public.a，路径里的表名都是小写形式。
         """
         store._write_json(store.TABLES_FILE, {})
         store._write_edges([])
@@ -142,14 +145,15 @@ class TestImpactAnalysis:
         up_paths = result["upstream_paths"]
 
         # A→C 有两条路径（不再只有最短的那条）
-        paths_from_A = up_paths["public.A"]
+        # 表名折叠小写：public.A → public.a
+        paths_from_A = up_paths["public.a"]
         paths_sorted = sorted(paths_from_A)  # 排序便于断言
         assert paths_sorted == [
-            ["public.A", "public.B", "public.C"],  # 经 B 的链路
-            ["public.A", "public.C"],              # 直连
+            ["public.a", "public.b", "public.c"],  # 经 B 的链路
+            ["public.a", "public.c"],              # 直连
         ]
         # B→C 只有一条
-        assert up_paths["public.B"] == [["public.B", "public.C"]]
+        assert up_paths["public.b"] == [["public.b", "public.c"]]
 
         # 前端展开这些路径得到的高亮边集合（模拟前端 buildEdgeSet 逻辑）
         highlighted_edges = set()
@@ -158,7 +162,7 @@ class TestImpactAnalysis:
                 for i in range(len(path) - 1):
                     highlighted_edges.add(f"{path[i]}->{path[i+1]}")
         # 三条边都应被高亮（旧实现会漏 A->B）
-        assert highlighted_edges == {"public.A->public.B", "public.B->public.C", "public.A->public.C"}
+        assert highlighted_edges == {"public.a->public.b", "public.b->public.c", "public.a->public.c"}
 
     def test_paths_truncated_flag(self):
         """路径未超过上限时 paths_truncated 为 False"""

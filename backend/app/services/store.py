@@ -567,7 +567,8 @@ def impact_analysis(table: str) -> dict:
     MAX_PATHS_PER_PAIR = 200  # 单个 (src,tgt) 对的最大路径数，超过则截断并标记
 
     G = build_graph()
-    # 表名可能含特殊字符，networkx 节点 id 就是全限定名
+    # 对输入表名做归一化（图里的节点是 normalize 后的全限定名，含大小写折叠）
+    table = normalize_table_name(table)
     if table not in G:
         return {"table": table, "error": "表不存在于血缘图中", "downstream": [], "upstream": []}
 

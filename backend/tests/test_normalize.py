@@ -58,9 +58,25 @@ class TestNormalizeTableName:
         """长链取最后两段作 schema.table"""
         assert normalize_table_name("a.b.c.d.target") == "d.target"
 
-    def test_lowercase_preserved(self):
-        """大小写保留"""
-        assert normalize_table_name("public.MyTable") == "public.MyTable"
+    def test_unquoted_folded_to_lowercase(self):
+        """不带引号的标识符折叠成小写（PostgreSQL 语义）
+
+        PG 里 ORDERS == orders == Orders（不带引号都折叠小写）。
+        这样避免同一张表因大小写不同被算成多张表。
+        """
+        assert normalize_table_name("public.MyTable") == "public.mytable"
+        assert normalize_table_name("ORDERS") == "public.orders"
+        assert normalize_table_name("Orders") == "public.orders"
+        assert normalize_table_name("orders") == "public.orders"
+        # ORDERS 和 orders 归一化后应相等
+        assert normalize_table_name("public.ORDERS") == normalize_table_name("public.orders")
+
+    def test_quoted_case_preserved(self):
+        """带引号的标识符保留原大小写（PostgreSQL 语义）"""
+        assert normalize_table_name('"Orders"') == "public.Orders"
+        assert normalize_table_name('"public"."MyTable"') == "public.MyTable"
+        # 带引号和不带引号的是不同的表（PG 语义）
+        assert normalize_table_name('"Orders"') != normalize_table_name("Orders")
 
     def test_cross_schema_distinct(self):
         """跨 schema 同名表必须区分（这是新设计的核心价值）"""
