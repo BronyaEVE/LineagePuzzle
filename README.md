@@ -41,6 +41,25 @@ Modern data platforms (Dataphin, WhaleOps, cloud DataWorks, etc.) and databases 
 - **Batch import** — drag in multiple `.sql` files or a `.zip` archive; each file becomes an independent script
 - **Zero-install deployment** — portable edition bundles the Python runtime; just double-click on the target machine
 
+### Screenshots
+
+<details>
+<summary>📸 Click to expand</summary>
+
+| | |
+|:---:|:---:|
+| **Global Lineage Graph** | **Column-level Lineage Drawer** |
+| ![Global Graph](docs/images/hero.png) | ![Column Drawer](docs/images/column-drawer.png) |
+| Click an edge to see `target column ← source columns` + transform expressions | |
+| **Impact Analysis** | **Node Collapse** |
+| ![Impact Analysis](docs/images/impact-analysis.png) | ![Node Collapse](docs/images/node-collapse.png) |
+| Click a node: cyan = upstream, orange = downstream | Collapse upstream/downstream chains with +/- buttons |
+| **Preprocess Rules** | |
+| ![Preprocess Rules](docs/images/preprocess-rules.png) | |
+| Regex replacement rules; param mapping is a built-in type | |
+
+</details>
+
 ---
 
 ## 🚀 Quick Start

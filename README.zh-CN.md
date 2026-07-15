@@ -42,6 +42,25 @@
 - **批量导入** —— 一次拖入多个 `.sql` 文件或 `.zip` 压缩包，每个文件成为独立脚本
 - **零安装部署** —— 便携版自带 Python 运行时，目标机双击即用
 
+### 截图预览
+
+<details>
+<summary>📸 点击展开</summary>
+
+| | |
+|:---:|:---:|
+| **全局血缘图谱** | **列级血缘映射** |
+| ![全局图谱](docs/images/hero.png) | ![列级映射](docs/images/column-drawer.png) |
+| 点边查看 `目标列 ← 源列` 及变换表达式 | |
+| **影响分析** | **节点折叠** |
+| ![影响分析](docs/images/impact-analysis.png) | ![节点折叠](docs/images/node-collapse.png) |
+| 点节点：青色 = 上游链路，橙色 = 下游链路 | +/- 按钮折叠/展开上下游链路 |
+| **预处理规则** | |
+| ![预处理规则](docs/images/preprocess-rules.png) | |
+| 正则替换规则；参数映射为内置类型 | |
+
+</details>
+
 ---
 
 ## 🚀 Quick Start
