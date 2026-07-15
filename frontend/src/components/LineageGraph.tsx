@@ -6,17 +6,19 @@ import {
   MiniMap,
   useNodesState,
   useEdgesState,
+  Handle,
+  Position,
   type Node,
   type Edge,
   type ReactFlowInstance,
   MarkerType,
-  Position,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Card, Empty, Tooltip, Drawer, Tag, Typography, Button, message } from "antd";
 import { ColumnWidthOutlined, ColumnHeightOutlined, FileImageOutlined, FileOutlined } from "@ant-design/icons";
 import { toPng } from "html-to-image";
 import type { GlobalGraph, GlobalEdge, Visualization, ColumnMapping } from "../types";
+import { GLOBAL_ID } from "../types";
 import { impactAnalysis as fetchImpactAnalysis } from "../api/client";
 
 const NODE_COLORS: Record<string, string> = {
@@ -33,16 +35,18 @@ const NODE_BORDER_COLORS: Record<string, string> = {
 
 const NODE_H = 40;
 // 节点宽度自适应：短表名收缩到最小，超长表名上限封顶 + 省略号
-const NODE_MIN_W = 120;
+// MIN_W 留足余量给边缘的折叠按钮（14px），避免按钮占比过大遮挡视觉
+const NODE_MIN_W = 150;
 const NODE_MAX_W = 260;
 
 // 布局参数（TB 和 LR 几何语义不同，分开定义避免混用导致重叠）：
 //   TB（垂直）：层间沿 y 轴（垂直），层内沿 x 轴（水平）→ 层内按节点【宽度】算间距
 //   LR（水平）：层间沿 x 轴（水平），层内沿 y 轴（垂直）→ 层内按节点【高度】算间距
-const LAYER_GAP_TB = 110;   // TB 层与层之间的垂直间距（y 轴）
-const INTRA_GAP_TB = 120;   // TB 层内节点之间的水平间距（x 轴，按宽度）
-const LAYER_GAP_LR = 300;   // LR 层与层之间的水平间距（x 轴，需 ≥ 节点宽度 + 箭头空间）
-const INTRA_GAP_LR = 30;    // LR 层内节点之间的垂直间距（y 轴，按高度）
+// 注意：折叠按钮凸出节点边缘 7px，层间距需留够净空给按钮 + 箭头 + 边标签。
+const LAYER_GAP_TB = 120;   // TB 层与层之间的垂直间距（y 轴）— 给箭头标签留空间
+const INTRA_GAP_TB = 40;    // TB 层内节点之间的水平间隙（x 轴，节点边到边）
+const LAYER_GAP_LR = 280;   // LR 层与层之间的水平间距（x 轴，需 ≥ 节点宽度 + 箭头空间）
+const INTRA_GAP_LR = 20;    // LR 层内节点之间的垂直间隙（y 轴，节点边到边）
 
 type LayoutDir = "TB" | "LR";
 
@@ -82,8 +86,9 @@ function nodeStyle(nodeType: string): React.CSSProperties {
     maxWidth: NODE_MAX_W,
     width: "fit-content",
     textAlign: "center" as const,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
+    // 不设 overflow:hidden —— 折叠按钮需要露在节点边框外（连线接触处）。
+    // inline style 的 overflow:hidden 优先级高于 CSS class 的 !important，会裁切按钮。
+    // 表名截断改由 truncateLabel() 在 JS 层处理（已实现）。
     whiteSpace: "nowrap",
   };
 }
@@ -126,8 +131,10 @@ function autoLayout(nodes: Node[], edges: Edge[], dir: LayoutDir): Node[] {
   const layerGap = isVertical ? LAYER_GAP_TB : LAYER_GAP_LR;
   // 层内间距（同层节点之间）：TB 沿 x 轴（水平，按宽度），LR 沿 y 轴（垂直，按高度）
   const intraGap = isVertical ? INTRA_GAP_TB : INTRA_GAP_LR;
-  // 层内排列方向的节点尺寸：TB 按宽度（节点宽 120-260），LR 按高度（40）
-  const intraSize = isVertical ? NODE_MAX_W : NODE_H;
+  // 层内排列方向的节点占位尺寸。布局时拿不到实际渲染宽度（DOM 未 measure），
+  // 用近似平均值（MIN 和 MAX 的中点）。TB 大部分节点接近 MIN_W，
+  // 用 MAX_W 会导致同层节点间距过大（中间留大空隙）。
+  const intraSize = isVertical ? Math.round((NODE_MIN_W + NODE_MAX_W) / 2) : NODE_H;
   const posMap: Record<string, { x: number; y: number }> = {};
 
   layers.forEach((layer, li) => {
@@ -153,6 +160,150 @@ function autoLayout(nodes: Node[], edges: Edge[], dir: LayoutDir): Node[] {
   }));
 }
 
+/**
+ * 计算被折叠隐藏的节点集合。
+ *
+ * collapsedUp 里的节点：递归找全部祖先（上游链路）隐藏。
+ * collapsedDown 里的节点：递归找全部后代（下游链路）隐藏。
+ * 折叠发起节点本身永远不隐藏（用户要看它）。
+ *
+ * 菱形依赖安全：visited 集合防止环 / 重复访问；
+ * n === 发起节点 时跳过，即使它在别的折叠方向里也不会被误隐藏。
+ */
+function computeHiddenNodes(
+  edges: Edge[],
+  collapsedUp: Set<string>,
+  collapsedDown: Set<string>,
+): Set<string> {
+  if (collapsedUp.size === 0 && collapsedDown.size === 0) return new Set();
+
+  // 构建邻接表
+  const outMap = new Map<string, string[]>();
+  const inMap = new Map<string, string[]>();
+  for (const e of edges) {
+    if (!outMap.has(e.source)) outMap.set(e.source, []);
+    outMap.get(e.source)!.push(e.target);
+    if (!inMap.has(e.target)) inMap.set(e.target, []);
+    inMap.get(e.target)!.push(e.source);
+  }
+
+  const hidden = new Set<string>();
+
+  // 折叠上游：对每个 collapsedUp 节点，DFS 找所有祖先
+  for (const nodeId of collapsedUp) {
+    const visited = new Set<string>();
+    const stack = [...(inMap.get(nodeId) ?? [])];
+    while (stack.length) {
+      const n = stack.pop()!;
+      if (visited.has(n)) continue;
+      visited.add(n);
+      // 不隐藏其他折叠发起节点（它们是用户要看的目标）
+      if (collapsedUp.has(n) || collapsedDown.has(n)) continue;
+      hidden.add(n);
+      stack.push(...(inMap.get(n) ?? []));
+    }
+  }
+
+  // 折叠下游：对每个 collapsedDown 节点，DFS 找所有后代
+  for (const nodeId of collapsedDown) {
+    const visited = new Set<string>();
+    const stack = [...(outMap.get(nodeId) ?? [])];
+    while (stack.length) {
+      const n = stack.pop()!;
+      if (visited.has(n)) continue;
+      visited.add(n);
+      if (collapsedUp.has(n) || collapsedDown.has(n)) continue;
+      hidden.add(n);
+      stack.push(...(outMap.get(n) ?? []));
+    }
+  }
+
+  return hidden;
+}
+
+/** 自定义节点：在标准节点基础上叠加折叠按钮（入边侧/出边侧）。
+ * 按钮位置响应布局方向：TB 时入边按钮在顶部、出边按钮在底部；LR 时在左右。
+ * 折叠状态和计数通过 node.data 传入。
+ */
+interface CollapsibleNodeData {
+  label: string;
+  fullName?: string;
+  nodeType?: string;
+  isUpCollapsed?: boolean;
+  isDownCollapsed?: boolean;
+  hiddenUpCount?: number;
+  hiddenDownCount?: number;
+  hasInEdges?: boolean;
+  hasOutEdges?: boolean;
+}
+
+const CollapseButton: React.FC<{
+  collapsed: boolean;
+  count: number;
+  position: "in" | "out";
+  isVertical: boolean;
+  onClick: () => void;
+}> = ({ collapsed, count, position, isVertical, onClick }) => {
+  // 按钮位置类名：TB 时 in=顶部 out=底部；LR 时 in=左侧 out=右侧
+  const posClass = isVertical
+    ? (position === "in" ? "collapse-top" : "collapse-bottom")
+    : (position === "in" ? "collapse-left" : "collapse-right");
+  const label = collapsed ? (count > 0 ? `+${count}` : "+") : "−";
+  return (
+    <div
+      className={`collapse-btn ${posClass} ${collapsed ? "collapse-active" : ""}`}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      title={collapsed ? `展开${position === "in" ? "上游" : "下游"}（${count} 个节点）` : `折叠${position === "in" ? "上游" : "下游"}链路`}
+    >
+      {label}
+    </div>
+  );
+};
+
+// Context：传 toggle 函数和布局方向给自定义节点组件（避免 nodeTypes 重建）
+const CollapseContext = React.createContext<{
+  toggleUp: (id: string) => void;
+  toggleDown: (id: string) => void;
+  isVertical: boolean;
+}>({ toggleUp: () => {}, toggleDown: () => {}, isVertical: true });
+
+const CollapsibleNode: React.FC<{ id: string; data: CollapsibleNodeData }> = ({ id, data }) => {
+  const { toggleUp, toggleDown, isVertical } = React.useContext(CollapseContext);
+  // Handle 是 ReactFlow 边的连接点。默认节点类型内置 Handle，自定义节点必须手动加，
+  // 否则边找不到连接点 → path 不渲染（这正是之前边消失的根因）。
+  // target Handle = 入边连接点（上游来），source Handle = 出边连接点（去下游）。
+  // 位置随布局方向：TB 时 target=top/source=bottom，LR 时 target=left/source=right。
+  const targetPos = isVertical ? Position.Top : Position.Left;
+  const sourcePos = isVertical ? Position.Bottom : Position.Right;
+  return (
+    <div className="collapsible-node">
+      <Handle type="target" position={targetPos} style={{ opacity: 0 }} />
+      {data.label as string}
+      <Handle type="source" position={sourcePos} style={{ opacity: 0 }} />
+      {(data.hasInEdges || data.isUpCollapsed) && (
+        <CollapseButton
+          collapsed={!!data.isUpCollapsed}
+          count={data.hiddenUpCount ?? 0}
+          position="in"
+          isVertical={isVertical}
+          onClick={() => toggleUp(id)}
+        />
+      )}
+      {(data.hasOutEdges || data.isDownCollapsed) && (
+        <CollapseButton
+          collapsed={!!data.isDownCollapsed}
+          count={data.hiddenDownCount ?? 0}
+          position="out"
+          isVertical={isVertical}
+          onClick={() => toggleDown(id)}
+        />
+      )}
+    </div>
+  );
+};
+
+const collapsibleNodeTypes = { collapsible: CollapsibleNode };
+
 /** 搜索/程序化聚焦目标：node 聚焦单个节点，edge 聚焦 source+target 两端 */
 export interface FocusTarget {
   type: "node" | "edge";
@@ -162,18 +313,16 @@ export interface FocusTarget {
 interface Props {
   globalGraph: GlobalGraph | null;
   visualization: Visualization | null;
-  highlightScriptId: string | null;
+  highlightScriptId: string;
   highlightSeq: number | null;
   // 点边时反向高亮对应语句（列级场景：点边→右栏语句高亮）
   onEdgeSelectSeq?: (seq: number | null) => void;
   // 搜索选中后聚焦+高亮（由 App/Header 的搜索框驱动）
   focusTarget?: FocusTarget | null;
-  // 影响分析触发时通知 App（脚本视图需切回全局图）
-  onImpactTrigger?: () => void;
 }
 
 const LineageGraph: React.FC<Props> = ({
-  globalGraph, visualization, highlightScriptId, highlightSeq, onEdgeSelectSeq, focusTarget, onImpactTrigger,
+  globalGraph, visualization, highlightScriptId, highlightSeq, onEdgeSelectSeq, focusTarget,
 }) => {
   const [layoutDir, setLayoutDir] = useState<LayoutDir>("TB");
   const isVertical = layoutDir === "TB";
@@ -188,6 +337,9 @@ const LineageGraph: React.FC<Props> = ({
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   // 展开的节点 id：点击节点时记录，该节点显示完整名（不限长），其他节点保持截断
   const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
+  // 折叠状态：collapsedUpstream/collapsedDownstream 各自独立的节点 id 集合
+  const [collapsedUpstream, setCollapsedUpstream] = useState<Set<string>>(new Set());
+  const [collapsedDownstream, setCollapsedDownstream] = useState<Set<string>>(new Set());
   // 影响分析高亮的边 id 集合：downstream 橙色、upstream 青色（单击节点触发）
   const [impactDownstreamEdges, setImpactDownstreamEdges] = useState<Set<string>>(new Set());
   const [impactUpstreamEdges, setImpactUpstreamEdges] = useState<Set<string>>(new Set());
@@ -204,14 +356,15 @@ const LineageGraph: React.FC<Props> = ({
 
   // 当选中脚本时，使用脚本自己的 visualization；否则用全局图
   const { laidNodes, laidEdges } = useMemo(() => {
-    // 选了脚本 → 用脚本级别的 visualization
-    if (highlightScriptId && visualization && visualization.nodes.length > 0) {
+    // 选了脚本（非全局）→ 用脚本级别的 visualization
+    if (highlightScriptId !== GLOBAL_ID && visualization && visualization.nodes.length > 0) {
       const nodes: Node[] = visualization.nodes.map((n) => {
         // expandedNodeId 不进本 useMemo 依赖：展开是纯样式变化，
         // 不应触发全图重新布局（autoLayout 是 O(V+E)）。展开效果由下面的
         // 节点 style effect 单独应用，复用本 useMemo 算出的布局结果。
         return {
           id: n.id,
+          type: "collapsible",
           data: { label: truncateLabel(n.label), fullName: n.label, nodeType: n.type },
           position: { x: 0, y: 0 },
           style: nodeStyle(n.type),
@@ -247,6 +400,7 @@ const LineageGraph: React.FC<Props> = ({
       // expandedNodeId 不进本 useMemo 依赖（同上）
       return {
         id: n.id,
+        type: "collapsible",
         data: { label: truncateLabel(n.label), fullName: n.label, nodeType: n.type },
         position: { x: 0, y: 0 },
         style: nodeStyle(n.type),
@@ -275,16 +429,76 @@ const LineageGraph: React.FC<Props> = ({
     return { laidNodes: autoLayout(nodes, edges, layoutDir), laidEdges: edges };
   }, [globalGraph, visualization, highlightScriptId, layoutDir]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(laidNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(laidEdges);
+  // 折叠过滤：基于折叠状态计算隐藏节点，再过滤显示的节点/边
+  const hiddenNodes = useMemo(
+    () => computeHiddenNodes(laidEdges, collapsedUpstream, collapsedDownstream),
+    [laidEdges, collapsedUpstream, collapsedDownstream],
+  );
+  const visibleNodes = useMemo(
+    () => laidNodes.filter((n) => !hiddenNodes.has(n.id)),
+    [laidNodes, hiddenNodes],
+  );
+  const visibleEdges = useMemo(
+    () => laidEdges.filter((e) => !hiddenNodes.has(e.source) && !hiddenNodes.has(e.target)),
+    [laidEdges, hiddenNodes],
+  );
+  // 各节点的隐藏上游/下游计数（用于按钮显示 +N）
+  const hiddenUpCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (collapsedUpstream.size === 0) return counts;
+    const inMap = new Map<string, Set<string>>();
+    for (const e of laidEdges) {
+      if (!inMap.has(e.target)) inMap.set(e.target, new Set());
+      inMap.get(e.target)!.add(e.source);
+    }
+    // 对每个折叠上游的节点，递归数祖先（含被隐藏的）
+    for (const nodeId of collapsedUpstream) {
+      const visited = new Set<string>();
+      const stack = [...(inMap.get(nodeId) ?? [])];
+      let count = 0;
+      while (stack.length) {
+        const n = stack.pop()!;
+        if (visited.has(n)) continue;
+        visited.add(n);
+        count++;
+        stack.push(...(inMap.get(n) ?? []));
+      }
+      counts.set(nodeId, count);
+    }
+    return counts;
+  }, [laidEdges, collapsedUpstream]);
+  const hiddenDownCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (collapsedDownstream.size === 0) return counts;
+    const outMap = new Map<string, Set<string>>();
+    for (const e of laidEdges) {
+      if (!outMap.has(e.source)) outMap.set(e.source, new Set());
+      outMap.get(e.source)!.add(e.target);
+    }
+    for (const nodeId of collapsedDownstream) {
+      const visited = new Set<string>();
+      const stack = [...(outMap.get(nodeId) ?? [])];
+      let count = 0;
+      while (stack.length) {
+        const n = stack.pop()!;
+        if (visited.has(n)) continue;
+        visited.add(n);
+        count++;
+        stack.push(...(outMap.get(n) ?? []));
+      }
+      counts.set(nodeId, count);
+    }
+    return counts;
+  }, [laidEdges, collapsedDownstream]);
+
+  const [nodes, setNodes, onNodesChange] = useNodesState(visibleNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(visibleEdges);
 
   // 高亮逻辑：单边（点边）> 影响分析（上下游双色）> 语句级（点语句）> 脚本级 > 默认
   //
-  // 关键：本 effect 直接以 laidEdges 为基底重算（而非读当前 state 的 eds），
-  // 且依赖 laidEdges。这样切换布局 / 展开节点导致 laidEdges 变化时，高亮会基于
-  // 新边重新应用，不会因「重置 effect(362) 覆盖高亮」而丢失（B5 修复）。
+  // 基于 visibleEdges（折叠后）重算高亮。折叠时高亮的边如果被隐藏，自然消失。
   React.useEffect(() => {
-    setEdges(laidEdges.map((e) => {
+    setEdges(visibleEdges.map((e) => {
       // 最高优先级：点边单条高亮（用 edge.id 定位，避免同 seq 多边被误点亮）
       if (selectedEdgeId !== null) {
         const hl = e.id === selectedEdgeId;
@@ -330,7 +544,8 @@ const LineageGraph: React.FC<Props> = ({
         };
       }
       // 全局图：选中脚本时高亮该脚本（script_id）的边，其他灰
-      if (highlightScriptId !== null) {
+      // （方案B后此分支仅在兼容旧逻辑时触发，正常路径下全局视图 highlightScriptId === GLOBAL_ID）
+      if (highlightScriptId !== GLOBAL_ID) {
         const sid = (e.data as { script_id?: string } | undefined)?.script_id;
         const hl = sid === highlightScriptId;
         return {
@@ -343,7 +558,7 @@ const LineageGraph: React.FC<Props> = ({
       return { ...e, animated: false, style: { ...e.style, stroke: "#8c8c8c", strokeWidth: 2 },
         labelStyle: { ...e.labelStyle, fill: "#333" } };
     }));
-  }, [laidEdges, highlightSeq, highlightScriptId, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, setEdges]);
+  }, [visibleEdges, highlightSeq, highlightScriptId, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, setEdges]);
 
   // 搜索选中后聚焦+高亮（由 App 的 focusTarget 驱动）
   React.useEffect(() => {
@@ -370,24 +585,80 @@ const LineageGraph: React.FC<Props> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusTarget]);
 
-  // 节点同步：布局变化时应用新坐标 + 展开状态样式。
-  // expandedNodeId 单独在此 effect 处理（不进布局 useMemo），
-  // 这样点节点展开表名不会触发全图 autoLayout 重算。
+  // 节点同步：布局/折叠变化时同步可见节点 + 应用展开样式 + 注入折叠按钮信息。
+  // 折叠按钮信息（isUpCollapsed/isDownCollapsed/hiddenUpCount/hiddenDownCount/hasInEdges/hasOutEdges）
+  // 通过 node.data 传给自定义节点组件渲染。
   React.useEffect(() => {
-    setNodes(laidNodes.map((n) => {
+    // 构建当前可见边的入/出度索引（判断节点是否有入边/出边，决定按钮显隐）
+    const inDeg = new Map<string, number>();
+    const outDeg = new Map<string, number>();
+    for (const e of visibleEdges) {
+      inDeg.set(e.target, (inDeg.get(e.target) ?? 0) + 1);
+      outDeg.set(e.source, (outDeg.get(e.source) ?? 0) + 1);
+    }
+    setNodes(visibleNodes.map((n) => {
       const expanded = expandedNodeId === n.id;
-      if (!expanded) return n;
+      const isUpCollapsed = collapsedUpstream.has(n.id);
+      const isDownCollapsed = collapsedDownstream.has(n.id);
       const fullName = (n.data as { fullName?: string }).fullName ?? String((n.data as { label?: unknown }).label ?? "");
       return {
         ...n,
-        data: { ...n.data, label: fullName },
-        style: { ...n.style, maxWidth: "none", border: "3px solid #fff", boxShadow: "0 0 8px rgba(255,255,255,0.8)" },
+        data: {
+          ...n.data,
+          label: expanded ? fullName : (n.data as { label?: unknown }).label,
+          isUpCollapsed,
+          isDownCollapsed,
+          hiddenUpCount: hiddenUpCounts.get(n.id) ?? 0,
+          hiddenDownCount: hiddenDownCounts.get(n.id) ?? 0,
+          hasInEdges: (inDeg.get(n.id) ?? 0) > 0 || isUpCollapsed,
+          hasOutEdges: (outDeg.get(n.id) ?? 0) > 0 || isDownCollapsed,
+        },
+        style: expanded
+          ? { ...n.style, maxWidth: "none", border: "3px solid #fff", boxShadow: "0 0 8px rgba(255,255,255,0.8)" }
+          : n.style,
       };
     }));
-  }, [laidNodes, expandedNodeId, setNodes]);
+  }, [visibleNodes, visibleEdges, expandedNodeId, collapsedUpstream, collapsedDownstream, hiddenUpCounts, hiddenDownCounts, setNodes]);
+
+  // 视图切换清理：切脚本/切全局时，清掉属于上一个图的内部选中态。
+  // 否则全局点边（ge-5）后切脚本，selectedEdgeId 仍是 ge-5 匹配不到 e- 边，
+  // 高亮 effect 把所有边判为"未选中"导致全灰。同理影响分析的 ge- 边 id。
+  React.useEffect(() => {
+    setSelectedEdgeId(null);
+    setSelectedEdge(null);
+    setImpactDownstreamEdges(new Set());
+    setImpactUpstreamEdges(new Set());
+    setExpandedNodeId(null);
+    impactTokenRef.current++; // 作废可能还在途的影响分析请求
+    setCollapsedUpstream(new Set());
+    setCollapsedDownstream(new Set());
+  }, [highlightScriptId]);
+
+  // 折叠/展开操作（由自定义节点组件的按钮调用）
+  const toggleCollapseUp = (nodeId: string) => {
+    setCollapsedUpstream((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+    // 折叠后清影响分析高亮（高亮的边可能已隐藏）
+    setImpactDownstreamEdges(new Set());
+    setImpactUpstreamEdges(new Set());
+  };
+  const toggleCollapseDown = (nodeId: string) => {
+    setCollapsedDownstream((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+    setImpactDownstreamEdges(new Set());
+    setImpactUpstreamEdges(new Set());
+  };
 
   const hasData = laidNodes.length > 0;
-  const isScriptView = !!highlightScriptId && !!visualization?.nodes.length;
+  const isScriptView = highlightScriptId !== GLOBAL_ID && !!visualization?.nodes.length;
 
   // === 图形导出 ===
   const handleExportPng = async () => {
@@ -491,8 +762,10 @@ const LineageGraph: React.FC<Props> = ({
     >
       {hasData ? (
         <div ref={wrapperRef} style={{ height: "calc(100vh - 160px)", minHeight: 300 }}>
+          <CollapseContext.Provider value={{ toggleUp: toggleCollapseUp, toggleDown: toggleCollapseDown, isVertical }}>
           <ReactFlow
             nodes={nodes} edges={edges}
+            nodeTypes={collapsibleNodeTypes}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
             onInit={(inst) => { reactFlowRef.current = inst; }}
             onNodeClick={(_, node) => {
@@ -506,8 +779,8 @@ const LineageGraph: React.FC<Props> = ({
               }
               // 展开表名
               setExpandedNodeId(node.id);
-              // 触发影响分析（脚本视图下先切回全局图）
-              if (onImpactTrigger) onImpactTrigger();
+              // 触发影响分析（在当前视图范围内高亮：全局视图跨脚本，单脚本视图限当前脚本）
+              // 影响分析的 edgeIndex 基于当前渲染的 edges 构建，天然适配当前范围。
               // 竞态防护：本次点击的 token，响应回来时校验是否仍是最新点击
               const myToken = ++impactTokenRef.current;
               // 把「全部路径」展开成边 id 集合的工具。
@@ -579,6 +852,7 @@ const LineageGraph: React.FC<Props> = ({
               maskColor="rgba(0,0,0,0.1)"
             />
           </ReactFlow>
+          </CollapseContext.Provider>
         </div>
       ) : (
         <Empty description={isScriptView ? "该脚本无血缘数据" : "提交第一个脚本开始构建血缘图谱"} style={{ marginTop: 80 }} />

@@ -1,19 +1,23 @@
 import React from "react";
 import { Card, List, Typography, Button, Popconfirm, Input, Empty, Tag } from "antd";
-import { DeleteOutlined, EditOutlined, FileTextOutlined } from "@ant-design/icons";
+import { DeleteOutlined, EditOutlined, FileTextOutlined, GlobalOutlined } from "@ant-design/icons";
 import type { ScriptSummary } from "../types";
+import { GLOBAL_ID } from "../types";
 
 const { Text } = Typography;
 
 interface Props {
   scripts: ScriptSummary[];
-  selectedId: string | null;
-  onSelect: (id: string | null) => void;
+  selectedId: string;
+  onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
+  /** 全局图谱的节点/边数（用于虚拟项显示统计） */
+  tableCount?: number;
+  edgeCount?: number;
 }
 
-const ScriptList: React.FC<Props> = ({ scripts, selectedId, onSelect, onDelete, onRename }) => {
+const ScriptList: React.FC<Props> = ({ scripts, selectedId, onSelect, onDelete, onRename, tableCount, edgeCount }) => {
   const [editingId, setEditingId] = React.useState<string | null>(null);
   const [editName, setEditName] = React.useState("");
 
@@ -29,24 +33,47 @@ const ScriptList: React.FC<Props> = ({ scripts, selectedId, onSelect, onDelete, 
     setEditingId(null);
   };
 
+  // 全局图谱虚拟项（置顶，不可删除/重命名）
+  const renderGlobalItem = () => {
+    const isSelected = selectedId === GLOBAL_ID;
+    return (
+      <List.Item
+        onClick={() => onSelect(GLOBAL_ID)}
+        style={{
+          cursor: "pointer",
+          background: isSelected ? "#e6f7ff" : "#fafafa",
+          borderLeft: isSelected ? "3px solid #1890ff" : "3px solid #1890ff",
+          padding: "8px 12px",
+          borderBottom: "1px solid #f0f0f0",
+        }}
+      >
+        <div style={{ width: "100%" }}>
+          <div style={{ marginBottom: 4 }}>
+            <GlobalOutlined style={{ marginRight: 4, color: "#1890ff" }} />
+            <Text strong style={{ fontSize: 13 }}>全局图谱</Text>
+            <Tag color="blue" style={{ marginLeft: 6, fontSize: 10 }}>置顶</Tag>
+          </div>
+          {(tableCount !== undefined || edgeCount !== undefined) && (
+            <div>
+              {tableCount !== undefined && <Tag color="green" style={{ fontSize: 11 }}>{tableCount} 张表</Tag>}
+              {edgeCount !== undefined && <Tag color="blue" style={{ fontSize: 11 }}>{edgeCount} 条血缘</Tag>}
+            </div>
+          )}
+        </div>
+      </List.Item>
+    );
+  };
+
   return (
     <Card
-      title={
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span>脚本列表 ({scripts.length})</span>
-          <Button
-            size="small"
-            type={selectedId === null ? "primary" : "default"}
-            onClick={() => onSelect(null)}
-          >
-            全部
-          </Button>
-        </div>
-      }
+      title={<span>脚本列表 ({scripts.length})</span>}
       size="small"
       style={{ height: "100%", overflow: "auto" }}
       styles={{ body: { padding: 0 } }}
     >
+      {/* 全局图谱虚拟项（始终置顶） */}
+      {renderGlobalItem()}
+
       {scripts.length === 0 ? (
         <Empty description="暂无脚本" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ marginTop: 40 }} />
       ) : (

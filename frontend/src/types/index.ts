@@ -1,5 +1,12 @@
 // === Request Types ===
 
+/** 全局图谱的虚拟脚本 ID。
+ * 全局图不对应某个具体脚本，作为脚本列表里的虚拟置顶项存在。
+ * selectedScriptId === GLOBAL_ID 时显示全局图，否则显示对应脚本图。
+ * App 层拦截此 ID，走 getGlobalGraph 而非 getScript。
+ */
+export const GLOBAL_ID = "__global__";
+
 export interface DatabaseConfig {
   host: string;
   port: number;

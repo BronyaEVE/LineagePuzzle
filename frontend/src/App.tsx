@@ -19,6 +19,7 @@ import type {
   DatabaseConfig as DatabaseConfigType, AnalysisResult,
   ScriptSummary, GlobalGraph, PreprocessRule,
 } from "./types";
+import { GLOBAL_ID } from "./types";
 
 const { Header, Content } = Layout;
 
@@ -31,7 +32,7 @@ function App() {
   // === 状态 ===
   const [scripts, setScripts] = useState<ScriptSummary[]>([]);
   const [globalGraph, setGlobalGraph] = useState<GlobalGraph | null>(null);
-  const [selectedScriptId, setSelectedScriptId] = useState<string | null>(null);
+  const [selectedScriptId, setSelectedScriptId] = useState<string>(GLOBAL_ID);
   const [selectedResult, setSelectedResult] = useState<AnalysisResult | null>(null);
   const [highlightSeq, setHighlightSeq] = useState<number | null>(null);
 
@@ -72,17 +73,21 @@ function App() {
   const selectTokenRef = useRef(0);
 
   // === 选中脚本 ===
-  const handleSelectScript = useCallback(async (id: string | null) => {
-    setSelectedScriptId(id);
+  // id 为 GLOBAL_ID 时显示全局图（不拉脚本详情）；否则拉对应脚本。
+  // selectedScriptId 永不为 null：初始值 GLOBAL_ID（全局图）。
+  const handleSelectScript = useCallback(async (id: string) => {
+    const targetId = id || GLOBAL_ID; // 兜底：旧调用传 null 时当全局
+    setSelectedScriptId(targetId);
     setHighlightSeq(null);
+    setFocusTarget(null);
     // 立即清空旧结果，避免切换过程中显示上一个脚本的数据（视觉错乱）
     setSelectedResult(null);
-    if (!id) {
-      return;
+    if (targetId === GLOBAL_ID) {
+      return; // 全局图不需要拉脚本详情
     }
     const myToken = ++selectTokenRef.current;
     try {
-      const result = await getScript(id);
+      const result = await getScript(targetId);
       // 过期响应丢弃：用户可能已点了另一个脚本
       if (myToken !== selectTokenRef.current) return;
       setSelectedResult(result);
@@ -90,8 +95,8 @@ function App() {
       if (myToken !== selectTokenRef.current) return;
       const msg = e instanceof Error ? e.message : "加载脚本失败";
       message.error(msg);
-      // 加载失败，回滚选中状态
-      setSelectedScriptId(null);
+      // 加载失败，回滚到全局图
+      setSelectedScriptId(GLOBAL_ID);
     }
   }, []);
 
@@ -127,7 +132,7 @@ function App() {
       await deleteScript(id);
       message.success("已删除");
       if (selectedScriptId === id) {
-        setSelectedScriptId(null);
+        setSelectedScriptId(GLOBAL_ID);
         setSelectedResult(null);
       }
       await refreshAll();
@@ -210,16 +215,17 @@ function App() {
 
   // 搜索框的节点/边数据（useMemo 化，避免每次渲染重建数组击穿 SearchBox 内部 useMemo）。
   // 边加 _edgeId 前缀（e- 脚本视图 / ge- 全局视图），与 LineageGraph 实际渲染的边 id 一致。
+  const isGlobalView = selectedScriptId === GLOBAL_ID;
   const searchNodes = useMemo(
-    () => (selectedScriptId ? selectedResult?.visualization.nodes : globalGraph?.nodes) || [],
-    [selectedScriptId, selectedResult, globalGraph],
+    () => (isGlobalView ? globalGraph?.nodes : selectedResult?.visualization.nodes) || [],
+    [isGlobalView, selectedResult, globalGraph],
   );
   const searchEdges = useMemo(
     () =>
-      (selectedScriptId
-        ? selectedResult?.visualization.edges?.map((e, i) => ({ ...e, _edgeId: `e-${i}` }))
-        : globalGraph?.edges?.map((e, i) => ({ ...e, _edgeId: `ge-${i}` }))) || [],
-    [selectedScriptId, selectedResult, globalGraph],
+      (isGlobalView
+        ? globalGraph?.edges?.map((e, i) => ({ ...e, _edgeId: `ge-${i}` }))
+        : selectedResult?.visualization.edges?.map((e, i) => ({ ...e, _edgeId: `e-${i}` }))) || [],
+    [isGlobalView, selectedResult, globalGraph],
   );
 
   return (
@@ -300,6 +306,8 @@ function App() {
                 onSelect={handleSelectScript}
                 onDelete={handleDelete}
                 onRename={handleRename}
+                tableCount={tableCount}
+                edgeCount={edgeCount}
               />
             </div>
 
@@ -312,7 +320,6 @@ function App() {
                 highlightSeq={highlightSeq}
                 onEdgeSelectSeq={setHighlightSeq}
                 focusTarget={focusTarget}
-                onImpactTrigger={() => handleSelectScript(null)}
               />
             </div>
 
