@@ -36,6 +36,7 @@ Modern data platforms (Dataphin, WhaleOps, cloud DataWorks, etc.) and databases 
 - **Offline-first** — static AST parsing via `sqlglot`, **no database connection required** to extract full lineage
 - **Table-level + Column-level** — not just table flow, click an edge to see `target column ← source columns` and transform expressions (`SUM(amount)`, `price*qty`)
 - **Impact analysis** — click a node to highlight all upstream (cyan) and downstream (orange) paths; diamond dependencies fully covered
+- **Node collapse** — in complex graphs, click a node's +/- button to collapse/expand upstream or downstream chains, focus on local structure
 - **Parameterized SQL** — supports ETL template placeholders like `${icl_schema}`, replaced via Preprocess Rules (param mapping is a built-in rule type)
 - **Batch import** — drag in multiple `.sql` files or a `.zip` archive; each file becomes an independent script
 - **Zero-install deployment** — portable edition bundles the Python runtime; just double-click on the target machine

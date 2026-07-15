@@ -156,18 +156,23 @@ Step 6: Persistence             → save to JSON + update global graph (under fi
 
 | Action | Effect |
 |--------|--------|
+| Click the pinned "Global Graph" item (top of script list) | Show the global accumulated lineage graph |
 | Click a script (left pane) | Middle pane switches to that script's lineage graph; right pane shows its statements |
-| Click "All" | Restore the global accumulated graph |
-| Click a node | Expand/collapse full table name (long names are truncated; click to see full) |
+| Click a node | Expand/collapse full table name AND trigger impact analysis (highlight upstream/downstream paths) |
+| Click node's inbound-side − button | Collapse all upstream chains (hide nodes + edges); an orange "+N" badge appears |
+| Click node's outbound-side − button | Collapse all downstream chains (hide nodes + edges); orange "+N" badge |
+| Click the "+N" badge | Re-expand the collapsed upstream/downstream chains |
 | Click an edge | Open the column-level lineage drawer (target col ← source col + transform); single-edge highlight |
 | Click a statement | All edges of that `seq` highlight in blue |
 | Search box | Fuzzy-match table/column names; on select, focus + highlight |
+
+> **Collapse:** each node has two small +/- buttons (14px) at its inbound/outbound edge-contact points (top/bottom in TB layout, left/right in LR layout). Collapsing hides the entire upstream/downstream chain recursively. Collapse state resets when switching scripts or to the global graph.
 
 **Highlight priority:** single edge (click edge) > impact analysis (upstream/downstream bi-color) > statement-level (click statement) > script-level > default (no highlight, static edges)
 
 > **Edge animation:** by default all edges are static (no flowing animation) to keep large graphs smooth — only highlighted edges animate.
 
-**Node style:** width auto-fits content (short names shrink, long names truncate + click to expand); expanded nodes glow with a white border.
+**Node style:** width auto-fits content (short names shrink to min 150px, long names truncate + click to expand); expanded nodes glow with a white border.
 
 **Layout:** toggle vertical (TB) / horizontal (LR) via the top-right button. Scroll to zoom, drag nodes, drag blank to pan, minimap at bottom-right.
 
@@ -188,6 +193,8 @@ Click a node to trigger impact analysis, computed on an in-memory networkx graph
 
 - **Downstream** (who's affected if this table changes): orange `#fa8c16` highlights all downstream paths
 - **Upstream** (where this table's data comes from): cyan `#13c2c2` highlights all upstream paths
+
+> **Scope:** impact analysis works in both views — the global graph view analyzes the entire graph (cross-script); a single-script view is scoped to the current script's edges only.
 
 > **Diamond dependencies fully covered:** when both `A→B→C` and `A→C` exist, clicking C uses `all_simple_paths` to return all paths, so the `A→B` middle edge is also highlighted (not skipped by shortest-path). Path explosion is guarded by three layers: `cutoff` depth limit + per-source path-count cap + cycle-degradation fallback.
 
