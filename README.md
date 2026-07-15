@@ -190,7 +190,7 @@ LineagePuzzle/
 │   │   ├── services/      # lineage extraction, storage, preprocess rules (core logic)
 │   │   ├── models/        # Pydantic data models
 │   │   └── main.py        # FastAPI app + static file hosting
-│   ├── tests/             # 222 tests (94% coverage)
+│   ├── tests/             # 273 tests (93% coverage)
 │   └── requirements.txt   # 9 core dependencies
 ├── frontend/
 │   └── src/
@@ -209,8 +209,24 @@ LineagePuzzle/
 ## 📊 Testing
 
 ```bash
-cd backend && python -m pytest    # 222 passed, 94% coverage
+cd backend && python -m pytest    # 273 passed, 93% coverage
 ```
+
+Test files (11 files, covering all layers):
+
+| File | Tests | Covers |
+|------|-------|--------|
+| `test_preprocessor` | 33 | Comment stripping, DO block extraction, transaction semicolons, preprocess rules |
+| `test_param_mapping` | 30 | Param replacement, preprocess rule CRUD, auto-migration |
+| `test_splitter` | 28 | Statement splitting, type detection, transaction blocks |
+| `test_api` | 46 | All 17 REST endpoints (e2e via TestClient) |
+| `test_store` | 41 | Persistence, impact analysis, export/import, path traversal guard |
+| `test_lineage_e2e` | 15 | End-to-end lineage: CASE WHEN, DO block, cross-schema, transactions |
+| `test_lineage_extractor` | 18 | Table-level lineage extraction, multi-source JOIN, temp table chains |
+| `test_column_lineage` | 18 | Column-level mapping, subquery passthrough, UPDATE lineage |
+| `test_normalize` | 15 | Table name normalization, case folding (PostgreSQL semantics) |
+| `test_impact_analysis` | 14 | all_simple_paths, diamond dependencies, path explosion guards |
+| `test_analyzer` | 4 | Offline mode, DB degradation |
 
 ---
 

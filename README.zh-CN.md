@@ -195,7 +195,7 @@ datalineage_visualizer/
 │   │   ├── services/      # 血缘提取、存储、预处理规则（核心逻辑）
 │   │   ├── models/        # Pydantic 数据模型
 │   │   └── main.py        # FastAPI 应用 + 静态文件托管
-│   ├── tests/             # 222 个测试（覆盖率 94%）
+│   ├── tests/             # 273 个测试（覆盖率 93%）
 │   └── requirements.txt   # 9 个核心依赖
 ├── frontend/
 │   └── src/
@@ -213,8 +213,24 @@ datalineage_visualizer/
 ## 📊 测试
 
 ```bash
-cd backend && python -m pytest    # 222 passed, 覆盖率 94%
+cd backend && python -m pytest    # 273 passed, 覆盖率 93%
 ```
+
+测试文件（11 个文件，覆盖全部层）：
+
+| 文件 | 测试数 | 覆盖范围 |
+|------|--------|---------|
+| `test_preprocessor` | 33 | 去注释、DO block 提取、事务补分号、预处理规则 |
+| `test_param_mapping` | 30 | 参数替换、预处理规则 CRUD、自动迁移 |
+| `test_splitter` | 28 | 语句拆分、类型检测、事务块 |
+| `test_api` | 46 | 全部 17 个 REST 端点（TestClient 端到端） |
+| `test_store` | 41 | 持久化、影响分析、导入导出、路径遍历防护 |
+| `test_lineage_e2e` | 15 | 端到端血缘：CASE WHEN、DO block、跨 schema、事务 |
+| `test_lineage_extractor` | 18 | 表级血缘提取、多源 JOIN、临时表链路 |
+| `test_column_lineage` | 18 | 列级映射、子查询穿透、UPDATE 血缘 |
+| `test_normalize` | 15 | 表名归一化、大小写折叠（PostgreSQL 语义） |
+| `test_impact_analysis` | 14 | all_simple_paths、菱形依赖、路径爆炸防护 |
+| `test_analyzer` | 4 | 离线模式、DB 降级 |
 
 ---
 
