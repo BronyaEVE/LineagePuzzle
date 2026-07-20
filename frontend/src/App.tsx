@@ -71,6 +71,9 @@ function App() {
 
   // 选中脚本的请求竞态防护：每次点击递增 token，只有最新请求的响应会被采纳
   const selectTokenRef = useRef(0);
+  // 搜索聚焦 token：每次搜索选中递增，附加到 FocusTarget 上保证 effect 重跑，
+  // 解决连续两次搜同一目标（值相同）时不重新聚焦的问题。
+  const focusTokenRef = useRef(0);
 
   // === 选中脚本 ===
   // id 为 GLOBAL_ID 时显示全局图（不拉脚本详情）；否则拉对应脚本。
@@ -276,7 +279,15 @@ function App() {
               nodes={searchNodes}
               edges={searchEdges}
               onSelectTarget={(t: SearchTarget) => {
-                setFocusTarget(t);
+                // 递增 token：即使连续两次搜同一目标，新 FocusTarget 引用不同，
+                // effect [focusTarget] 也会重跑，避免「重复搜索无反馈」。
+                const focusToken = ++focusTokenRef.current;
+                setFocusTarget({
+                  type: t.type,
+                  id: t.id,
+                  focusToken,
+                  edgeIds: t.edgeIds,
+                });
               }}
             />
             <Button

@@ -221,6 +221,132 @@ function computeHiddenNodes(
   return hidden;
 }
 
+/** 反查哪些折叠发起点挡住了一个目标节点（用于搜索聚焦时自动展开）。
+ *
+ * 搜索聚焦的目标节点可能被折叠链隐藏在 hiddenNodes 里。本函数复刻
+ * computeHiddenNodes 的逐发起点 DFS，记录每个折叠发起点的隐藏集合，
+ * 然后挑出包含目标节点的那几个发起点。移除它们即可让目标重新可见。
+ *
+ * @param targetIds 需要变可见的节点 id 集合（节点聚焦=自身，边聚焦=两端）
+ * @returns { up: 要移除的上游折叠发起点, down: 要移除的下游折叠发起点 }
+ */
+function findBlockingCollapses(
+  edges: Edge[],
+  collapsedUp: Set<string>,
+  collapsedDown: Set<string>,
+  targetIds: Set<string>,
+): { up: Set<string>; down: Set<string> } {
+  const blockingUp = new Set<string>();
+  const blockingDown = new Set<string>();
+  if (collapsedUp.size === 0 && collapsedDown.size === 0) {
+    return { up: blockingUp, down: blockingDown };
+  }
+  // 构建邻接表
+  const outMap = new Map<string, string[]>();
+  const inMap = new Map<string, string[]>();
+  for (const e of edges) {
+    if (!outMap.has(e.source)) outMap.set(e.source, []);
+    outMap.get(e.source)!.push(e.target);
+    if (!inMap.has(e.target)) inMap.set(e.target, []);
+    inMap.get(e.target)!.push(e.source);
+  }
+  // 对每个上游折叠发起点，DFS 其祖先；若命中目标，记下发起点
+  for (const startId of collapsedUp) {
+    const visited = new Set<string>();
+    const stack = [...(inMap.get(startId) ?? [])];
+    while (stack.length) {
+      const n = stack.pop()!;
+      if (visited.has(n)) continue;
+      visited.add(n);
+      if (targetIds.has(n)) blockingUp.add(startId);
+      // 不穿越其他折叠发起节点（与 computeHiddenNodes 的屏障语义一致）
+      if (collapsedUp.has(n) || collapsedDown.has(n)) continue;
+      stack.push(...(inMap.get(n) ?? []));
+    }
+  }
+  // 对每个下游折叠发起点，DFS 其后代
+  for (const startId of collapsedDown) {
+    const visited = new Set<string>();
+    const stack = [...(outMap.get(startId) ?? [])];
+    while (stack.length) {
+      const n = stack.pop()!;
+      if (visited.has(n)) continue;
+      visited.add(n);
+      if (targetIds.has(n)) blockingDown.add(startId);
+      if (collapsedUp.has(n) || collapsedDown.has(n)) continue;
+      stack.push(...(outMap.get(n) ?? []));
+    }
+  }
+  return { up: blockingUp, down: blockingDown };
+}
+
+/** 解析聚焦目标对应的「需要变可见的节点 id 集合」+ 命中的边列表。
+ *
+ * 三种聚焦类型：
+ *  - node: 节点自身
+ *  - edge: 单条边的两端
+ *  - field: 所有命中边的两端（搜字段名时，多条边可能都含该字段）
+ *
+ * 返回 null 表示目标在当前视图已失效（边找不到等），调用方应忽略本次聚焦。
+ */
+function resolveFocusNodeIds(
+  target: { type: "node" | "edge" | "field"; id: string; edgeIds?: string[] },
+  edges: Edge[],
+): { nodeIds: Set<string>; hitEdges: Edge[] } | null {
+  if (target.type === "node") {
+    return { nodeIds: new Set([target.id]), hitEdges: [] };
+  }
+  if (target.type === "edge") {
+    const found = edges.find((e) => e.id === target.id);
+    if (!found) return null;
+    return { nodeIds: new Set([found.source, found.target]), hitEdges: [found] };
+  }
+  // field: 用 SearchBox 聚合时透传的 edgeIds 找命中的边（更可靠）；
+  // 兜底用 id（格式 `table.col`）重新扫 column_mappings 匹配（防止 edgeIds 缺失）。
+  let hitEdges: Edge[];
+  if (target.edgeIds && target.edgeIds.length > 0) {
+    const idSet = new Set(target.edgeIds);
+    hitEdges = edges.filter((e) => idSet.has(e.id));
+  } else {
+    const dot = target.id.indexOf(".");
+    if (dot < 0) return null; // 不是 table.col 格式，无法兜底匹配
+    const tbl = target.id.slice(0, dot);
+    const col = target.id.slice(dot + 1);
+    hitEdges = edges.filter((e) => {
+      const ms = (e.data as { column_mappings?: { target_table?: string; target_column?: string; source_table?: string; source_columns?: string[] }[] } | undefined)?.column_mappings ?? [];
+      return ms.some((m) =>
+        (m.target_table === tbl && m.target_column === col) ||
+        (m.source_table === tbl && (m.source_columns ?? []).includes(col)),
+      );
+    });
+  }
+  if (hitEdges.length === 0) return null;
+  const nodeIds = new Set<string>();
+  for (const e of hitEdges) { nodeIds.add(e.source); nodeIds.add(e.target); }
+  return { nodeIds, hitEdges };
+}
+
+/** 把影响分析返回的「全部路径」展开成边 id 集合。
+ * 后端 v2.3 返回 list[list[str]]（含菱形依赖的平行路径），
+ * 例如 A→C 的 upstream_paths["A"] = [["A","C"], ["A","B","C"]]。
+ * 展开两层：每个表 → 多条路径 → 每条路径的相邻边。
+ */
+function buildEdgeSetFromPaths(
+  pathsMap: Record<string, string[][]>,
+  edgeIndex: Map<string, string>,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const pathList of Object.values(pathsMap)) {
+    for (const path of pathList) {
+      for (let i = 0; i < path.length - 1; i++) {
+        const eid = edgeIndex.get(`${path[i]}→${path[i + 1]}`);
+        if (eid) ids.add(eid);
+      }
+    }
+  }
+  return ids;
+}
+
 /** 自定义节点：在标准节点基础上叠加折叠按钮（入边侧/出边侧）。
  * 按钮位置响应布局方向：TB 时入边按钮在顶部、出边按钮在底部；LR 时在左右。
  * 折叠状态和计数通过 node.data 传入。
@@ -304,10 +430,21 @@ const CollapsibleNode: React.FC<{ id: string; data: CollapsibleNodeData }> = ({ 
 
 const collapsibleNodeTypes = { collapsible: CollapsibleNode };
 
-/** 搜索/程序化聚焦目标：node 聚焦单个节点，edge 聚焦 source+target 两端 */
+/** 搜索/程序化聚焦目标：
+ *  - node: 聚焦单个节点（搜表名）
+ *  - edge: 聚焦 source+target 两端 + 单边高亮（兼容旧路径，单条边聚焦）
+ *  - field: 高亮所有含该字段的边（搜字段名，血缘语义：该字段在哪些流转路径出现）
+ *
+ * focusToken: 递增计数器。每次搜索选中都生成新 token，保证 effect 重跑——
+ * 即使连续两次搜同一个表名（值相同），token 不同也会重新触发聚焦，
+ * 解决「重复搜索无反馈」问题。
+ */
 export interface FocusTarget {
-  type: "node" | "edge";
-  id: string;  // node: node.id；edge: 边的 id（React Flow 生成的 e-${i}/ge-${i}）
+  type: "node" | "edge" | "field";
+  id: string;            // node: node.id；edge: 边 id；field: 字段名
+  focusToken: number;    // 递增 token，保证重复搜索重新触发
+  // field 类型：该字段命中的全部边 id（由 SearchBox 聚合后透传）
+  edgeIds?: string[];
 }
 
 interface Props {
@@ -340,9 +477,15 @@ const LineageGraph: React.FC<Props> = ({
   // 折叠状态：collapsedUpstream/collapsedDownstream 各自独立的节点 id 集合
   const [collapsedUpstream, setCollapsedUpstream] = useState<Set<string>>(new Set());
   const [collapsedDownstream, setCollapsedDownstream] = useState<Set<string>>(new Set());
+  // 暂存的搜索聚焦目标：当目标被折叠隐藏时，先移除挡路的折叠点（异步重渲染），
+  // 再由 pendingFocus effect 在目标变可见后补做 fitView。无暂存时为 null。
+  const [pendingFocus, setPendingFocus] = useState<FocusTarget | null>(null);
   // 影响分析高亮的边 id 集合：downstream 橙色、upstream 青色（单击节点触发）
   const [impactDownstreamEdges, setImpactDownstreamEdges] = useState<Set<string>>(new Set());
   const [impactUpstreamEdges, setImpactUpstreamEdges] = useState<Set<string>>(new Set());
+  // 字段搜索高亮的边 id 集合：搜字段名时高亮所有含该字段的边（紫色）。
+  // 独立于影响分析，避免两者混淆；优先级低于单边选中，高于语句/脚本级。
+  const [fieldHighlightEdges, setFieldHighlightEdges] = useState<Set<string>>(new Set());
   // 影响分析请求竞态防护：每次点击节点递增 token，只有最新请求的响应被采纳。
   // 避免快速连点多个节点时，先返回的响应覆盖最终结果。
   const impactTokenRef = useRef(0);
@@ -353,6 +496,7 @@ const LineageGraph: React.FC<Props> = ({
     return () => { mountedRef.current = false; };
   }, []);
   const hasImpactHighlight = impactDownstreamEdges.size > 0 || impactUpstreamEdges.size > 0;
+  const hasFieldHighlight = fieldHighlightEdges.size > 0;
 
   // 当选中脚本时，使用脚本自己的 visualization；否则用全局图
   const { laidNodes, laidEdges } = useMemo(() => {
@@ -533,6 +677,16 @@ const LineageGraph: React.FC<Props> = ({
           labelStyle: { ...e.labelStyle, fill: "#bbb" },
         };
       }
+      // 字段搜索高亮：命中的边紫色 #722ed1（与搜索框 ◇ 图标同色），其他灰。
+      // 优先级低于单边选中/影响分析，高于语句级/脚本级。
+      if (hasFieldHighlight) {
+        const hl = fieldHighlightEdges.has(e.id);
+        return {
+          ...e, animated: hl,
+          style: { ...e.style, stroke: hl ? "#722ed1" : "#d9d9d9", strokeWidth: hl ? 3 : 1.5 },
+          labelStyle: { ...e.labelStyle, fill: hl ? "#722ed1" : "#999" },
+        };
+      }
       // 语句级别高亮（右栏点语句：该 seq 的所有边，多条是期望行为）
       if (highlightSeq !== null) {
         const seq = e.data?.statement_seq;
@@ -558,32 +712,127 @@ const LineageGraph: React.FC<Props> = ({
       return { ...e, animated: false, style: { ...e.style, stroke: "#8c8c8c", strokeWidth: 2 },
         labelStyle: { ...e.labelStyle, fill: "#333" } };
     }));
-  }, [visibleEdges, highlightSeq, highlightScriptId, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, setEdges]);
+  }, [visibleEdges, highlightSeq, highlightScriptId, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, hasFieldHighlight, fieldHighlightEdges, setEdges]);
 
-  // 搜索选中后聚焦+高亮（由 App 的 focusTarget 驱动）
+  // 搜索选中后聚焦+高亮（由 App 的 focusTarget 驱动）。
+  // 折叠链可能把目标节点隐藏 → fitView 找不到不可见节点会静默失败。
+  // 处理：先解析目标节点 id（resolveFocusNodeIds 统一处理 node/edge/field 三类），
+  // 检查是否在 hiddenNodes 中；若被隐藏，移除挡路的折叠发起点让目标重新可见
+  // （异步重渲染），并暂存到 pendingFocus，由下方的补做 effect 在目标变可见后
+  // 执行 fitView。这样无论折叠与否搜索都能聚焦。
   React.useEffect(() => {
     if (!focusTarget || !reactFlowRef.current) return;
+    const resolved = resolveFocusNodeIds(focusTarget, edges);
+    if (!resolved) return; // 目标在当前视图已失效（边消失等），忽略
+    const { nodeIds: needVisible, hitEdges } = resolved;
+    // 反查挡住目标的折叠发起点
+    const { up: blockUp, down: blockDown } = findBlockingCollapses(
+      laidEdges, collapsedUpstream, collapsedDownstream, needVisible,
+    );
+    if (blockUp.size > 0 || blockDown.size > 0) {
+      // 有挡路折叠点：移除它们，目标会在重渲染后变可见，暂存待补做
+      if (blockUp.size > 0) {
+        setCollapsedUpstream((prev) => {
+          const next = new Set(prev);
+          for (const id of blockUp) next.delete(id);
+          return next;
+        });
+      }
+      if (blockDown.size > 0) {
+        setCollapsedDownstream((prev) => {
+          const next = new Set(prev);
+          for (const id of blockDown) next.delete(id);
+          return next;
+        });
+      }
+      setPendingFocus(focusTarget);
+      return;
+    }
+    // 无挡路折叠点：但目标本身可能因别的原因不可见（理论上不应发生，兜底）
+    if ([...needVisible].some((id) => hiddenNodes.has(id))) {
+      setPendingFocus(focusTarget);
+      return;
+    }
+    // 目标可见，直接聚焦 + 应用高亮
     const rf = reactFlowRef.current;
     if (focusTarget.type === "node") {
-      // 聚焦单个节点 + 展开表名 + 清边高亮
+      // 搜表名 = 点节点的效果：fitView + 展开表名 + 影响分析高亮（上下游双色）
       rf.fitView({ nodes: [{ id: focusTarget.id }], padding: 0.5, duration: 400, maxZoom: 1.5 });
       setExpandedNodeId(focusTarget.id);
       setSelectedEdgeId(null);
       setSelectedEdge(null);
-    } else {
-      // 聚焦边的两端节点 + 单边高亮
-      const found = edges.find((e) => e.id === focusTarget.id);
-      if (found) {
-        rf.fitView({
-          nodes: [{ id: found.source }, { id: found.target }],
-          padding: 0.5, duration: 400, maxZoom: 1.5,
-        });
-        setSelectedEdgeId(found.id);
-        setSelectedEdge(found);
-      }
+      setFieldHighlightEdges(new Set());
+      triggerImpactAnalysis(focusTarget.id);
+    } else if (focusTarget.type === "edge" && hitEdges.length > 0) {
+      const e = hitEdges[0];
+      rf.fitView({
+        nodes: [{ id: e.source }, { id: e.target }],
+        padding: 0.5, duration: 400, maxZoom: 1.5,
+      });
+      setSelectedEdgeId(e.id);
+      setSelectedEdge(e);
+      setFieldHighlightEdges(new Set());
+    } else if (focusTarget.type === "field") {
+      // 字段搜索：高亮所有命中边 + fitView 涵盖这些边的全部端点节点
+      rf.fitView({
+        nodes: [...needVisible].map((id) => ({ id })),
+        padding: 0.5, duration: 400, maxZoom: 1.5,
+      });
+      setFieldHighlightEdges(new Set(hitEdges.map((e) => e.id)));
+      setSelectedEdgeId(null);
+      setSelectedEdge(null);
+      setExpandedNodeId(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusTarget]);
+
+  // pendingFocus 补做：折叠点移除后目标变可见，这里在下一轮渲染补做 fitView。
+  // 依赖 hiddenNodes（折叠移除后它重算 → 本 effect 重跑）+ pendingFocus 本身。
+  React.useEffect(() => {
+    if (!pendingFocus || !reactFlowRef.current) return;
+    const resolved = resolveFocusNodeIds(pendingFocus, edges);
+    if (!resolved) { setPendingFocus(null); return; }
+    const { nodeIds: needVisible, hitEdges } = resolved;
+    // 目标仍未全部可见（折叠移除可能不够，或边已消失）→ 放弃，避免死循环
+    if ([...needVisible].some((id) => hiddenNodes.has(id))) {
+      setPendingFocus(null);
+      return;
+    }
+    const rf = reactFlowRef.current;
+    // 等一帧让 ReactFlow 完成节点坐标计算（折叠移除后新节点刚加入需要布局）
+    const t = window.setTimeout(() => {
+      if (pendingFocus.type === "node") {
+        // 搜表名 = 点节点效果：fitView + 展开表名 + 影响分析高亮（上下游双色）
+        rf.fitView({ nodes: [{ id: pendingFocus.id }], padding: 0.5, duration: 400, maxZoom: 1.5 });
+        setExpandedNodeId(pendingFocus.id);
+        setSelectedEdgeId(null);
+        setSelectedEdge(null);
+        setFieldHighlightEdges(new Set());
+        triggerImpactAnalysis(pendingFocus.id);
+      } else if (pendingFocus.type === "edge" && hitEdges.length > 0) {
+        const e = hitEdges[0];
+        rf.fitView({
+          nodes: [{ id: e.source }, { id: e.target }],
+          padding: 0.5, duration: 400, maxZoom: 1.5,
+        });
+        setSelectedEdgeId(e.id);
+        setSelectedEdge(e);
+        setFieldHighlightEdges(new Set());
+      } else if (pendingFocus.type === "field") {
+        rf.fitView({
+          nodes: [...needVisible].map((id) => ({ id })),
+          padding: 0.5, duration: 400, maxZoom: 1.5,
+        });
+        setFieldHighlightEdges(new Set(hitEdges.map((e) => e.id)));
+        setSelectedEdgeId(null);
+        setSelectedEdge(null);
+        setExpandedNodeId(null);
+      }
+      setPendingFocus(null);
+    }, 60);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFocus, hiddenNodes]);
 
   // 节点同步：布局/折叠变化时同步可见节点 + 应用展开样式 + 注入折叠按钮信息。
   // 折叠按钮信息（isUpCollapsed/isDownCollapsed/hiddenUpCount/hiddenDownCount/hasInEdges/hasOutEdges）
@@ -628,10 +877,12 @@ const LineageGraph: React.FC<Props> = ({
     setSelectedEdge(null);
     setImpactDownstreamEdges(new Set());
     setImpactUpstreamEdges(new Set());
+    setFieldHighlightEdges(new Set());
     setExpandedNodeId(null);
     impactTokenRef.current++; // 作废可能还在途的影响分析请求
     setCollapsedUpstream(new Set());
     setCollapsedDownstream(new Set());
+    setPendingFocus(null); // 作废可能暂存的搜索聚焦补做
   }, [highlightScriptId]);
 
   // 折叠/展开操作（由自定义节点组件的按钮调用）
@@ -642,9 +893,10 @@ const LineageGraph: React.FC<Props> = ({
       else next.add(nodeId);
       return next;
     });
-    // 折叠后清影响分析高亮（高亮的边可能已隐藏）
+    // 折叠后清影响分析高亮和字段高亮（高亮的边可能已隐藏）
     setImpactDownstreamEdges(new Set());
     setImpactUpstreamEdges(new Set());
+    setFieldHighlightEdges(new Set());
   };
   const toggleCollapseDown = (nodeId: string) => {
     setCollapsedDownstream((prev) => {
@@ -655,6 +907,42 @@ const LineageGraph: React.FC<Props> = ({
     });
     setImpactDownstreamEdges(new Set());
     setImpactUpstreamEdges(new Set());
+    setFieldHighlightEdges(new Set());
+  };
+
+  // 触发影响分析：拉取某节点的上下游全部路径 → 高亮对应边（下游橙/上游青）。
+  // 抽出来供 onNodeClick 和搜索聚焦（搜表名）复用——搜表名 = 点节点的效果。
+  // 竞态防护：每次调用递增 token，响应回来时校验是否仍是最新触发。
+  const triggerImpactAnalysis = (nodeId: string) => {
+    const myToken = ++impactTokenRef.current;
+    fetchImpactAnalysis(nodeId).then((result) => {
+      // 过期响应（用户又点了别的节点/又搜了别的）或组件已卸载 → 丢弃
+      if (myToken !== impactTokenRef.current || !mountedRef.current) return;
+      if (result.error || (!result.downstream.length && !result.upstream.length)) {
+        setImpactDownstreamEdges(new Set());
+        setImpactUpstreamEdges(new Set());
+        return;
+      }
+      // 建 (src→tgt) → edgeId 索引。
+      // 边 id 前缀随视图不同：全局图 ge-${i}，脚本视图 e-${i}。
+      // 从 ReactFlow 实例实时取当前渲染的边（而非闭包里的 edges 快照），
+      // 保证聚焦 effect 的 setTimeout 补做路径也能拿到折叠展开后的最新边。
+      const currentEdges = reactFlowRef.current?.getEdges() ?? edges;
+      const edgeIndex = new Map<string, string>();
+      currentEdges.forEach((e: Edge) => {
+        edgeIndex.set(`${e.source}→${e.target}`, e.id);
+      });
+      setImpactDownstreamEdges(buildEdgeSetFromPaths(result.paths || {}, edgeIndex));
+      setImpactUpstreamEdges(buildEdgeSetFromPaths(result.upstream_paths || {}, edgeIndex));
+      // 路径过多被裁剪时提示用户（病态图才会触发，正常数仓不会）
+      if (result.paths_truncated) {
+        message.warning("血缘路径较多，仅高亮部分链路（受路径数上限保护）");
+      }
+    }).catch(() => {
+      if (myToken !== impactTokenRef.current || !mountedRef.current) return;
+      setImpactDownstreamEdges(new Set());
+      setImpactUpstreamEdges(new Set());
+    });
   };
 
   const hasData = laidNodes.length > 0;
@@ -777,66 +1065,17 @@ const LineageGraph: React.FC<Props> = ({
                 impactTokenRef.current++; // 作废可能还在途的请求
                 return;
               }
-              // 展开表名
+              // 展开表名 + 点节点触发影响分析 → 清字段搜索高亮，避免两种高亮叠加
               setExpandedNodeId(node.id);
-              // 触发影响分析（在当前视图范围内高亮：全局视图跨脚本，单脚本视图限当前脚本）
-              // 影响分析的 edgeIndex 基于当前渲染的 edges 构建，天然适配当前范围。
-              // 竞态防护：本次点击的 token，响应回来时校验是否仍是最新点击
-              const myToken = ++impactTokenRef.current;
-              // 把「全部路径」展开成边 id 集合的工具。
-              // v2.3：后端返回 list[list[str]]（全部路径，含菱形依赖的平行路径），
-              // 例如 A→C 的 upstream_paths["A"] = [["A","C"], ["A","B","C"]]。
-              // 展开两层：每个上游表 → 多条路径 → 每条路径的相邻边。
-              const buildEdgeSet = (
-                pathsMap: Record<string, string[][]>,
-                edgeIndex: Map<string, string>,
-              ): Set<string> => {
-                const ids = new Set<string>();
-                for (const pathList of Object.values(pathsMap)) {
-                  for (const path of pathList) {
-                    for (let i = 0; i < path.length - 1; i++) {
-                      const eid = edgeIndex.get(`${path[i]}→${path[i + 1]}`);
-                      if (eid) ids.add(eid);
-                    }
-                  }
-                }
-                return ids;
-              };
-              fetchImpactAnalysis(node.id).then((result) => {
-                // 过期响应（用户又点了别的节点）或组件已卸载 → 丢弃
-                if (myToken !== impactTokenRef.current || !mountedRef.current) return;
-                if (result.error || (!result.downstream.length && !result.upstream.length)) {
-                  setImpactDownstreamEdges(new Set());
-                  setImpactUpstreamEdges(new Set());
-                  return;
-                }
-                // 建 (src→tgt) → edgeId 索引。
-                // 边 id 前缀随视图不同：全局图 ge-${i}，脚本视图 e-${i}。
-                // 用当前实际渲染的边建索引，保证高亮 id 与渲染边 id 一致。
-                const edgeIndex = new Map<string, string>();
-                edges.forEach((e) => {
-                  edgeIndex.set(`${e.source}→${e.target}`, e.id);
-                });
-                // 下游全部路径 → 边 id 集合（橙色）
-                const downIds = buildEdgeSet(result.paths || {}, edgeIndex);
-                // 上游全部路径 → 边 id 集合（青色）。含菱形依赖的平行路径，
-                // 确保 A→B→C 且 A→C 时 A→B 这条中间边也被高亮。
-                const upIds = buildEdgeSet(result.upstream_paths || {}, edgeIndex);
-                setImpactDownstreamEdges(downIds);
-                setImpactUpstreamEdges(upIds);
-                // 路径过多被裁剪时提示用户（病态图才会触发，正常数仓不会）
-                if (result.paths_truncated) {
-                  message.warning("血缘路径较多，仅高亮部分链路（受路径数上限保护）");
-                }
-              }).catch(() => {
-                if (myToken !== impactTokenRef.current || !mountedRef.current) return;
-                setImpactDownstreamEdges(new Set());
-                setImpactUpstreamEdges(new Set());
-              });
+              setFieldHighlightEdges(new Set());
+              setSelectedEdgeId(null);
+              setSelectedEdge(null);
+              triggerImpactAnalysis(node.id);
             }}
             onEdgeClick={(_, edge) => {
               setSelectedEdge(edge);
               setSelectedEdgeId(edge.id);  // 单边高亮（只这一条，不用 seq 避免 JOIN 多边误亮）
+              setFieldHighlightEdges(new Set()); // 清字段搜索高亮，避免取消单边选中后残留
             }}
             fitView fitViewOptions={{ padding: 0.2 }}
             proOptions={{ hideAttribution: true }}
