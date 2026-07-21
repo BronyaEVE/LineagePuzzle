@@ -528,7 +528,7 @@ docker exec -i lineage-pg psql -U postgres < backend/tests/init_test_tables.sql
 pack_portable.bat    # 产出 dist-portable/（约 94MB）
 ```
 
-将 `dist-portable/` 整个文件夹拷贝到目标机器，双击 `run.bat`，浏览器开 `http://localhost:8000`。
+将 `dist-portable/` 整个文件夹拷贝到目标机器，双击 `run.bat`。uvicorn 后台启动（无控制台窗口），浏览器自动打开 `http://localhost:8000`。停止服务双击 `stop.bat`。
 
 **目标机不需要安装任何东西**（无需 Python、Node、Docker）。便携版内嵌 Python 3.13.12 embeddable 运行时 + 全部依赖。
 
@@ -536,11 +536,24 @@ pack_portable.bat    # 产出 dist-portable/（约 94MB）
 
 ```
 dist-portable/
-├── python/              内嵌 Python + 全部依赖（勿改）
+├── python/              内嵌 Python + 全部依赖（含 pythonw.exe，勿改）
 ├── app/                 后端代码（勿改）
 ├── frontend/dist/       前端页面（勿改）
-└── run.bat              启动脚本（双击运行）
+├── logs/                运行时：lineage.log（uvicorn）+ launcher.log（启动器）+ lineage.pid
+├── launcher.pyw         无窗口启动器：子进程管理、PID 文件、开浏览器、防重复
+├── run.bat              薄壳：调用 `pythonw.exe launcher.pyw start`
+└── stop.bat             薄壳：调用 `pythonw.exe launcher.pyw stop`
 ```
+
+**启动/停止机制：**
+- `run.bat` 是薄壳，通过自带的 `pythonw.exe`（无窗口版 Python）调用 `launcher.pyw`，全程不弹控制台。启动器流程：
+  1. 检测端口 8000 是否已被占用 → 已占用则只开浏览器退出（防重复启动）
+  2. 否则用 `subprocess.Popen`（`CREATE_NO_WINDOW`）启动 uvicorn 子进程，stdout/stderr 重定向到 `logs/lineage.log`
+  3. 轮询端口就绪后，记录监听 PID 到 `logs/lineage.pid`，打开浏览器
+- `stop.bat` 调用 `launcher.pyw stop`。策略 1：从 `logs/lineage.pid` 读 PID 执行 `taskkill /F`。策略 2（PID 文件失效兜底，比如硬关电脑后）：用 `Get-NetTCPConnection` 按端口 8000 查监听进程再 kill。然后等待端口真正释放。
+- `launcher.pyw status`（调试用）把当前状态写到 `logs/launcher.log`。
+
+> 所有用户可见输出都进日志文件（`pythonw.exe` 无控制台）。出问题时先看 `logs/launcher.log`（启动器决策），再看 `logs/lineage.log`（uvicorn 输出）。
 
 ---
 

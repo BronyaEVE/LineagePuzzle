@@ -73,12 +73,14 @@ Two paths depending on your environment:
 
 1. Download `LineagePuzzle-v2.0.0-portable.zip` (~33 MB) from the [Releases](../../releases/latest) page
 2. Extract to any folder (avoid Chinese characters and spaces in the path)
-3. Double-click `run.bat`
-4. Open **http://localhost:8000** in your browser
+3. Double-click `run.bat` — uvicorn starts in the **background** (no console window stays open) and your browser opens automatically to **http://localhost:8000**
+4. To stop the service, double-click `stop.bat`
 
 **That's it.** The target machine needs no Python, Node, or Docker, and no internet. The portable package bundles Python 3.13 runtime and all dependencies. Copy the whole folder to a USB stick and run it on any intranet machine.
 
-> Want colleagues to access it? `run.bat` listens on `0.0.0.0:8000` by default, so coworkers can reach it at `http://your-ip:8000`. Copy the `app/data/` folder to them and they'll see the same global graph.
+> **Run/Stop mechanism:** `run.bat` is a thin wrapper that invokes `launcher.pyw` via the bundled `pythonw.exe` (the windowless Python variant). The launcher manages the uvicorn subprocess lifecycle: it writes the PID to `logs/lineage.pid`, redirects uvicorn output to `logs/lineage.log`, and itself logs to `logs/launcher.log`. Running `run.bat` again while the service is up just reopens the browser (no duplicate launch). `stop.bat` stops by PID file first, falling back to looking up the listener on port 8000 (so it still works after a hard shutdown that left the PID file stale).
+
+> Want colleagues to access it? The service listens on `0.0.0.0:8000` by default, so coworkers can reach it at `http://your-ip:8000`. Copy the `app/data/` folder to them and they'll see the same global graph.
 
 ### Option B: Build from Source (developers)
 

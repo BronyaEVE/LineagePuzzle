@@ -1,43 +1,26 @@
 @echo off
-setlocal
-
 REM ============================================================
 REM LineagePuzzle - Portable Launcher
 REM
-REM Uses the bundled embedded Python (python\python.exe).
-REM Target machine needs NOTHING installed.
+REM Thin wrapper around launcher.pyw (run via pythonw.exe, no window).
+REM Double-click to start: uvicorn runs in background, browser opens
+REM automatically. If already running, just reopens the browser.
 REM
-REM Usage: double-click this file
-REM Browser: http://localhost:8000
-REM Stop: Ctrl+C
+REM Stop: double-click stop.bat
 REM ============================================================
 
 cd /d "%~dp0"
-set "PY=%CD%\python\python.exe"
-set "PORT=8000"
+set "PYW=%CD%\python\pythonw.exe"
+set "LAUNCHER=%CD%\launcher.pyw"
 
-echo.
-echo ============================================================
-echo   LineagePuzzle
-echo ============================================================
-echo.
-
-REM --- Check bundled Python exists ---
-if not exist "%PY%" (
-    echo [ERROR] Bundled Python not found: %PY%
+if not exist "%PYW%" (
+    echo [ERROR] Bundled Python not found: %PYW%
     echo         This doesn't look like a complete portable package.
     pause
     exit /b 1
 )
 
-REM --- Start service ---
-echo Starting service with bundled Python ...
-echo Browser: http://localhost:%PORT%
-echo API docs: http://localhost:%PORT%/docs
-echo Press Ctrl+C to stop.
-echo.
-
-cd /d "%CD%\app"
-"%PY%" -m uvicorn app.main:app --host 0.0.0.0 --port %PORT%
-
-endlocal
+REM pythonw.exe has no console window; the bat window closes immediately after.
+REM launcher.pyw handles: port-in-use check, uvicorn launch, PID file, browser open.
+start "" /B "%PYW%" "%LAUNCHER%" start
+exit /b 0

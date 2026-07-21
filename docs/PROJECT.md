@@ -499,7 +499,7 @@ docker exec -i lineage-pg psql -U postgres < backend/tests/init_test_tables.sql
 pack_portable.bat    # produces dist-portable/ (~94 MB)
 ```
 
-Copy the entire `dist-portable/` folder to the target machine, double-click `run.bat`, and open `http://localhost:8000`.
+Copy the entire `dist-portable/` folder to the target machine, double-click `run.bat`. uvicorn starts in the background (no console window) and the browser opens automatically to `http://localhost:8000`. To stop, double-click `stop.bat`.
 
 **The target machine needs nothing installed** (no Python, Node, or Docker). The portable edition bundles the Python 3.13.12 embeddable runtime + all dependencies.
 
@@ -507,11 +507,24 @@ Portable edition structure:
 
 ```
 dist-portable/
-├── python/              Embedded Python + all deps (do not modify)
+├── python/              Embedded Python + all deps (includes pythonw.exe, do not modify)
 ├── app/                 Backend code (do not modify)
 ├── frontend/dist/       Frontend pages (do not modify)
-└── run.bat              Launcher (double-click to run)
+├── logs/                Runtime: lineage.log (uvicorn) + launcher.log (launcher) + lineage.pid
+├── launcher.pyw         Windowless launcher: subprocess mgmt, PID file, browser open, dedup
+├── run.bat              Thin wrapper: invokes `pythonw.exe launcher.pyw start`
+└── stop.bat             Thin wrapper: invokes `pythonw.exe launcher.pyw stop`
 ```
+
+**Run/stop mechanism:**
+- `run.bat` is a thin wrapper that calls `launcher.pyw` via the bundled `pythonw.exe` (the windowless Python variant), so no console window ever pops up. The launcher:
+  1. Checks if port 8000 is already in use → if yes, just opens the browser and exits (no duplicate launch)
+  2. Otherwise starts uvicorn as a subprocess (`subprocess.Popen` with `CREATE_NO_WINDOW`), stdout/stderr redirected to `logs/lineage.log`
+  3. Polls the port until ready, then records the listener PID to `logs/lineage.pid` and opens the browser
+- `stop.bat` calls `launcher.pyw stop`. Strategy 1: read PID from `logs/lineage.pid` and `taskkill /F`. Strategy 2 (fallback when PID file is missing/stale after a hard shutdown): look up the listener on port 8000 via `Get-NetTCPConnection` and kill it. Then waits for the port to actually release.
+- `launcher.pyw status` (debugging) writes the current state to `logs/launcher.log`.
+
+> All user-visible output goes to log files, since `pythonw.exe` has no console. If something seems wrong, check `logs/launcher.log` first (launcher decisions) then `logs/lineage.log` (uvicorn output).
 
 ---
 
