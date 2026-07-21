@@ -14,7 +14,12 @@ REM ============================================================
 
 chcp 65001 >nul
 cd /d "%~dp0"
+REM ============================================================
+REM 改版本号只需改这一行 + README 里的两处文案。
+REM ============================================================
+set "VERSION=2.0.0"
 set "OUT=%CD%\dist-portable"
+set "ZIP=%CD%\LineagePuzzle-v%VERSION%-portable.zip"
 set "FE=%CD%\frontend"
 set "BE=%CD%\backend"
 set "PY_DIR=%OUT%\python"
@@ -24,18 +29,19 @@ set "EMBED_URL=https://mirrors.huaweicloud.com/python/3.13.12/python-3.13.12-emb
 
 echo.
 echo ============================================================
-echo   LineagePuzzle - Portable Packaging
+echo   LineagePuzzle v%VERSION% - Portable Packaging
 echo   Embedded Python 3.13.12 + full deps
 echo ============================================================
 echo.
 
 if exist "%OUT%" rmdir /s /q "%OUT%"
+if exist "%ZIP%" del "%ZIP%"
 mkdir "%OUT%" "%PY_DIR%" "%APP_DIR%" 2>nul
-echo [1/6] Output dir: %OUT%
+echo [1/7] Output dir: %OUT%
 
 REM --- 1. Build frontend ---
 echo.
-echo [2/6] Building frontend ...
+echo [2/7] Building frontend ...
 pushd "%FE%"
 call npm run build
 set "RC=%errorlevel%"
@@ -46,7 +52,7 @@ echo       Frontend build done
 
 REM --- 2. Download + extract embedded Python ---
 echo.
-echo [3/6] Downloading embedded Python 3.13.12 (Huawei mirror) ...
+echo [3/7] Downloading embedded Python 3.13.12 (Huawei mirror) ...
 powershell -Command "Invoke-WebRequest -Uri '%EMBED_URL%' -OutFile '%OUT%\python.zip' -TimeoutSec 180 -UseBasicParsing"
 if not exist "%OUT%\python.zip" goto :error_download
 echo       Downloaded: %OUT%\python.zip
@@ -57,13 +63,13 @@ echo       Embedded Python extracted
 
 REM --- 3. Patch python311._pth: enable site + add site-packages ---
 echo.
-echo [4/6] Patching python313._pth ...
+echo [4/7] Patching python313._pth ...
 powershell -Command "$p='%PY_DIR%\python313._pth'; $c=Get-Content $p; if ($c -notcontains 'import site') { Add-Content $p 'import site' }; if ($c -notcontains 'Lib\site-packages') { Add-Content $p 'Lib\site-packages' }; New-Item -ItemType Directory -Force -Path '%PY_DIR%\Lib\site-packages' | Out-Null"
 echo       _pth patched (import site + Lib\site-packages)
 
 REM --- 4. Install all deps into embedded site-packages via dev pip ---
 echo.
-echo [5/6] Installing all deps into embedded Python (this takes a few minutes) ...
+echo [5/7] Installing all deps into embedded Python (this takes a few minutes) ...
 REM NOTE: do NOT use --only-binary here (it breaks fastapi resolution with --target).
 REM Verified working: plain install with --target into embed site-packages.
 python -m pip install -r "%BE%\requirements.txt" --target "%PY_DIR%\Lib\site-packages" --index-url %MIRROR%
@@ -73,7 +79,7 @@ echo       Deps installed
 
 REM --- 5. Copy app + frontend ---
 echo.
-echo [6/6] Copying app and frontend ...
+echo [6/7] Copying app and frontend ...
 xcopy "%BE%\app" "%APP_DIR%\app\" /e /i /q /y >nul
 xcopy "%BE%\tests" "%APP_DIR%\tests\" /e /i /q /y >nul
 copy "%BE%\requirements.txt" "%APP_DIR%\" >nul
@@ -89,17 +95,27 @@ echo Validating embedded Python can import C extensions ...
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :error_import
 
+REM --- 7. Compress to zip (Compress-Archive is slow for ~33MB, allow a couple minutes) ---
+echo.
+echo [7/7] Compressing to %ZIP% (this takes a few minutes) ...
+powershell -Command "Compress-Archive -Path '%OUT%\*' -DestinationPath '%ZIP%' -CompressionLevel Optimal"
+if not exist "%ZIP%" goto :error_zip
+echo       Zip created
+
 REM --- Done ---
 echo.
-powershell -Command "'Size: {0:N1} MB' -f ((Get-ChildItem '%OUT%' -Recurse | Measure-Object Length -Sum).Sum/1MB)"
+powershell -Command "'Uncompressed: {0:N1} MB' -f ((Get-ChildItem '%OUT%' -Recurse | Measure-Object Length -Sum).Sum/1MB)"
+powershell -Command "'Zip size: {0:N1} MB' -f ((Get-Item '%ZIP%').Length/1MB)"
 echo.
 echo ============================================================
 echo   Portable packaging complete
 echo ============================================================
 echo.
-echo   Output: %OUT%
+echo   Output dir: %OUT%
+echo   Zip:        %ZIP%
+echo   Version:    v%VERSION%
 echo   Contains: embedded Python 3.13.12 + app + frontend
-echo   Target machine: just double-click run.bat (nothing to install)
+echo   Target machine: extract zip, double-click run.bat (nothing to install)
 echo.
 goto :eof
 
@@ -132,4 +148,10 @@ exit /b 1
 echo.
 echo [ERROR] Embedded Python failed to import C extensions (exit %RC%)
 echo        The package may not work on target machine
+exit /b 1
+
+:error_zip
+echo.
+echo [ERROR] Failed to create zip at %ZIP%
+echo        dist-portable\ directory is still valid; you can compress it manually
 exit /b 1

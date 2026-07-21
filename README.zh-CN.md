@@ -38,6 +38,7 @@
 - **表级 + 列级** —— 不仅看表间流转，还能点边查看 `目标列 ← 源列` 及变换表达式（`SUM(amount)`、`price*qty`）
 - **影响分析** —— 点击节点，高亮其全部上游链路（青色）和下游链路（橙色），菱形依赖完整覆盖
 - **节点折叠** —— 复杂图谱里点节点边缘的 +/- 按钮折叠/展开上游或下游链路，专注看局部
+- **标签筛选** —— 给脚本打扁平多维度标签（如 `[C层, 个人借据]`），全局画布按标签筛选只显示命中脚本贡献的血缘，类似 Excel 筛选
 - **参数化 SQL** —— 支持 ETL 模板占位符 `${icl_schema}`，配合「预处理规则」替换成实际 schema（参数映射为内置规则特例）
 - **批量导入** —— 一次拖入多个 `.sql` 文件或 `.zip` 压缩包，每个文件成为独立脚本
 - **零安装部署** —— 便携版自带 Python 运行时，目标机双击即用
@@ -71,7 +72,7 @@
 
 > 适合：内网隔离环境、不想折腾 Python/Node 环境的用户。
 
-1. 到 [Releases](../../releases/latest) 页面下载 `LineagePuzzle-v1.0.0-portable.zip`（约 94MB）
+1. 到 [Releases](../../releases/latest) 页面下载 `LineagePuzzle-v2.0.0-portable.zip`（约 94MB）
 2. 解压到任意目录（路径避免中文和空格）
 3. 双击 `run.bat`
 4. 浏览器打开 **http://localhost:8000**
@@ -163,7 +164,7 @@ public.orders → public.order_report   操作：INSERT   语句 #1
 
 ### 其他
 
-- **搜索框**：模糊匹配表名/字段名，选中后自动聚焦 + 高亮
+- **搜索框**：模糊匹配表名/字段名。搜表名触发影响分析（与点节点同效果）；搜字段高亮该字段流转经过的所有边。重复搜同一目标也会重新聚焦
 - **预处理规则**：配置正则替换规则（name/pattern/replacement/enabled），应对各种奇怪 SQL 格式；参数映射为内置规则特例（id 以 `param-` 前缀），分析时自动应用
 - **导入/导出**：一键备份/迁移全部血缘数据（JSON）
 - **图导出**：导出当前图谱为 PNG / 独立 HTML
@@ -191,11 +192,11 @@ public.orders → public.order_report   操作：INSERT   语句 #1
 datalineage_visualizer/
 ├── backend/
 │   ├── app/
-│   │   ├── api/           # FastAPI 路由（17 个 REST 端点）
+│   │   ├── api/           # FastAPI 路由（21 个 REST 端点）
 │   │   ├── services/      # 血缘提取、存储、预处理规则（核心逻辑）
 │   │   ├── models/        # Pydantic 数据模型
 │   │   └── main.py        # FastAPI 应用 + 静态文件托管
-│   ├── tests/             # 273 个测试（覆盖率 93%）
+│   ├── tests/             # 292 个测试（覆盖率 93%）
 │   └── requirements.txt   # 9 个核心依赖
 ├── frontend/
 │   └── src/
@@ -213,7 +214,7 @@ datalineage_visualizer/
 ## 📊 测试
 
 ```bash
-cd backend && python -m pytest    # 273 passed, 覆盖率 93%
+cd backend && python -m pytest    # 292 passed, 覆盖率 93%
 ```
 
 测试文件（11 个文件，覆盖全部层）：
@@ -223,8 +224,8 @@ cd backend && python -m pytest    # 273 passed, 覆盖率 93%
 | `test_preprocessor` | 33 | 去注释、DO block 提取、事务补分号、预处理规则 |
 | `test_param_mapping` | 30 | 参数替换、预处理规则 CRUD、自动迁移 |
 | `test_splitter` | 28 | 语句拆分、类型检测、事务块 |
-| `test_api` | 46 | 全部 17 个 REST 端点（TestClient 端到端） |
-| `test_store` | 41 | 持久化、影响分析、导入导出、路径遍历防护 |
+| `test_api` | 55 | 全部 21 个 REST 端点（TestClient 端到端）、标签端点、批量带标签 |
+| `test_store` | 51 | 持久化、影响分析、导入导出、路径遍历防护、标签维度+打标 |
 | `test_lineage_e2e` | 15 | 端到端血缘：CASE WHEN、DO block、跨 schema、事务 |
 | `test_lineage_extractor` | 18 | 表级血缘提取、多源 JOIN、临时表链路 |
 | `test_column_lineage` | 18 | 列级映射、子查询穿透、UPDATE 血缘 |

@@ -3,7 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from ..models.analysis import AnalysisResult, ScriptSummary, GlobalGraph
-from ..schemas.requests import AnalyzeRequest, CorrectStatementRequest, BatchAnalyzeRequest
+from ..schemas.requests import (
+    AnalyzeRequest, CorrectStatementRequest, BatchAnalyzeRequest,
+    SetScriptTagsRequest, BatchSetTagsRequest, TagSchema,
+)
 from ..services.analyzer import analyze
 from ..services.lineage_extractor import extract_lineages
 from ..services import store
@@ -41,6 +44,9 @@ async def analyze_batch(request: BatchAnalyzeRequest):
             result = analyze(item.content, request.database_config)
             # 用文件名作为脚本显示名（去掉 .sql 后缀更清爽）
             result.name = item.name.removesuffix(".sql").removesuffix(".SQL")
+            # 整批统一打标（可选）：前端勾选「所有文件打上以上标签」时传入
+            if request.tags:
+                result.tags = list(request.tags)
             result = store.save_script(result)
             results.append(result)
         except Exception as e:
@@ -97,6 +103,33 @@ async def rename_script(script_id: str, name: str = ""):
     if not result:
         raise HTTPException(status_code=404, detail="脚本不存在")
     return {"status": "renamed", "name": name}
+
+
+@router.put("/scripts/{script_id}/tags", response_model=AnalysisResult)
+async def set_script_tags(script_id: str, request: SetScriptTagsRequest):
+    """给单个脚本打标签（全量替换 tags 数组）。
+
+    只改 scripts/{id}.json，不影响全局表/边。tags 是扁平字符串数组，
+    维度归属由 tag_schema 查得（脚本本身不存维度结构）。
+    """
+    try:
+        result = store.set_script_tags(script_id, request.tags)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not result:
+        raise HTTPException(status_code=404, detail="脚本不存在")
+    return result
+
+
+@router.post("/scripts/batch-tags")
+async def batch_set_script_tags(request: BatchSetTagsRequest):
+    """批量给多个脚本打同一组标签（全量替换每个脚本的 tags）。
+
+    用于批量上传后统一整理，或批量导入面板整批打标。
+    单个脚本失败（如已被删除）不阻塞其他脚本，失败列表通过响应体返回。
+    """
+    result = store.batch_set_script_tags(request.script_ids, request.tags)
+    return result
 
 
 @router.get("/scripts/{script_id}/statements")
@@ -204,6 +237,29 @@ async def set_preprocess_rules(rules: list[dict]):
     builtin=True 的规则通常由参数映射迁移而来，用户也可自定义 builtin 规则。
     """
     return store.set_preprocess_rules(rules)
+
+
+# === 标签维度定义（管理员维护，脚本筛选器依赖此定义）===
+
+@router.get("/tag-schema", response_model=TagSchema)
+async def get_tag_schema():
+    """获取标签维度定义表。
+
+    返回 {dimensions: [{name, values}]}。部署后默认空（dimensions: []），
+    由管理员通过设置面板填充实际维度名（如「数仓层」「业务线」）和标签值。
+    维度名和标签值完全由用户定义，代码不预设任何维度。
+    """
+    return store.get_tag_schema()
+
+
+@router.put("/tag-schema", response_model=TagSchema)
+async def set_tag_schema(schema: TagSchema):
+    """更新标签维度定义表（全量替换）。
+
+    请求体：{dimensions: [{name, values}]}。后端做清洗（去空白、去重、长度限制）。
+    维度增删不影响已打标的脚本（脚本只存扁平 tags 数组，维度只是筛选时的分组依据）。
+    """
+    return store.set_tag_schema(schema.model_dump())
 
 
 # === 导入导出 ===

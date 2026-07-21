@@ -132,6 +132,9 @@ export interface AnalysisResult {
   visualization: Visualization;
   // DESIGN.v2 §4.3：ast_only | ast_with_db_validation
   extraction_mode: "ast_only" | "ast_with_db_validation";
+  // 扁平多标签：脚本所属的分类标签（如 ["C层","个人借据"]）。
+  // 维度归属由 tag_schema 查得，脚本本身不存维度结构。
+  tags: string[];
 }
 
 // === 脚本管理 ===
@@ -142,6 +145,8 @@ export interface ScriptSummary {
   created_at: string;
   statement_count: number;
   table_count: number;
+  // 扁平标签数组，列表展示 + 筛选器命中判断
+  tags: string[];
 }
 
 // === 全局图谱 ===
@@ -178,4 +183,23 @@ export interface ImpactAnalysis {
   paths_truncated: boolean;  // 是否因路径过多触发上限裁剪（true 表示只返回了部分）
   has_cycle: boolean;
   error?: string;
+}
+
+// === 标签维度定义（管理员维护，脚本筛选器依赖此定义）===
+
+/** 单个标签维度。维度名和标签值完全由用户定义，代码不预设。 */
+export interface TagDimension {
+  name: string;            // 维度名，如「数仓层」「业务线」
+  values: string[];        // 该维度下的可选标签值，如 ["O层","C层","D层"]
+}
+
+/** 标签维度定义表。部署后默认空，由管理员通过设置面板填充。 */
+export interface TagSchema {
+  dimensions: TagDimension[];
+}
+
+/** 批量打标的响应：成功的脚本 id 列表 + 失败的（id+原因）。 */
+export interface BatchSetTagsResult {
+  updated: string[];
+  failed: { id: string; reason: string }[];
 }

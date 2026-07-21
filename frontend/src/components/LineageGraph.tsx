@@ -456,10 +456,15 @@ interface Props {
   onEdgeSelectSeq?: (seq: number | null) => void;
   // 搜索选中后聚焦+高亮（由 App/Header 的搜索框驱动）
   focusTarget?: FocusTarget | null;
+  // 标签筛选命中脚本 id 集合。null = 不筛选（显示全部全局边）；
+  // 非 null = 全局视图下只渲染 script_id 在此集合中的边 + 这些边的端点节点（边驱动 + 孤立表补显）。
+  // 单脚本视图忽略此参数。
+  tagFilteredScriptIds?: Set<string> | null;
 }
 
 const LineageGraph: React.FC<Props> = ({
   globalGraph, visualization, highlightScriptId, highlightSeq, onEdgeSelectSeq, focusTarget,
+  tagFilteredScriptIds,
 }) => {
   const [layoutDir, setLayoutDir] = useState<LayoutDir>("TB");
   const isVertical = layoutDir === "TB";
@@ -540,17 +545,32 @@ const LineageGraph: React.FC<Props> = ({
       return { laidNodes: [], laidEdges: [] };
     }
 
-    const nodes: Node[] = globalGraph.nodes.map((n) => {
-      // expandedNodeId 不进本 useMemo 依赖（同上）
-      return {
-        id: n.id,
-        type: "collapsible",
-        data: { label: truncateLabel(n.label), fullName: n.label, nodeType: n.type },
-        position: { x: 0, y: 0 },
-        style: nodeStyle(n.type),
-      };
-    });
-    const edges: Edge[] = globalGraph.edges.map((e: GlobalEdge, i: number) => ({
+    // 标签筛选：全局视图下按命中脚本过滤边（边驱动）。
+    // 只保留 script_id 在 tagFilteredScriptIds 中的边，再由这些边推导节点（孤立表补显）。
+    // tagFilteredScriptIds 为 null 或单脚本视图时不筛选（走到这里已经是全局视图，故只判 null）。
+    const filterSet = tagFilteredScriptIds ?? null;
+    const filteredGlobalEdges = filterSet
+      ? globalGraph.edges.filter((e) => filterSet.has(e.script_id))
+      : globalGraph.edges;
+    // 被筛选后保留的节点 = 至少出现在一条保留边的端点上的节点（边驱动）
+    const nodeIdsInEdges = new Set<string>();
+    for (const e of filteredGlobalEdges) {
+      nodeIdsInEdges.add(e.source);
+      nodeIdsInEdges.add(e.target);
+    }
+    const nodes: Node[] = globalGraph.nodes
+      .filter((n) => (!filterSet || nodeIdsInEdges.has(n.id)))
+      .map((n) => {
+        // expandedNodeId 不进本 useMemo 依赖（同上）
+        return {
+          id: n.id,
+          type: "collapsible",
+          data: { label: truncateLabel(n.label), fullName: n.label, nodeType: n.type },
+          position: { x: 0, y: 0 },
+          style: nodeStyle(n.type),
+        };
+      });
+    const edges: Edge[] = filteredGlobalEdges.map((e: GlobalEdge, i: number) => ({
       id: `ge-${i}`,
       source: e.source,
       target: e.target,
@@ -571,7 +591,7 @@ const LineageGraph: React.FC<Props> = ({
     }));
 
     return { laidNodes: autoLayout(nodes, edges, layoutDir), laidEdges: edges };
-  }, [globalGraph, visualization, highlightScriptId, layoutDir]);
+  }, [globalGraph, visualization, highlightScriptId, layoutDir, tagFilteredScriptIds]);
 
   // 折叠过滤：基于折叠状态计算隐藏节点，再过滤显示的节点/边
   const hiddenNodes = useMemo(

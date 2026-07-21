@@ -102,6 +102,7 @@ def setup_module():
     store.EDGES_FILE = store.DATA_DIR / "edges.jsonl"
     store.SCRIPTS_DIR = store.DATA_DIR / "scripts"
     store.LOCK_FILE = store.DATA_DIR / "store.lock"
+    store.TAG_SCHEMA_FILE = store.DATA_DIR / "tag_schema.json"
 
 
 def teardown_module():
@@ -113,6 +114,7 @@ def teardown_module():
         store.EDGES_FILE = store.DATA_DIR / "edges.jsonl"
         store.SCRIPTS_DIR = store.DATA_DIR / "scripts"
         store.LOCK_FILE = store.DATA_DIR / "store.lock"
+        store.TAG_SCHEMA_FILE = store.DATA_DIR / "tag_schema.json"
 
 
 def _read_edges():
@@ -889,3 +891,113 @@ class TestExportImport:
         assert set(re_exported["scripts"].keys()) == {"rt1", "rt2"}
         assert re_exported["param_mapping"] == {"icl_schema": "ods"}
         assert len(re_exported["edges"]) == exported_edge_count
+
+
+class TestTags:
+    """标签维度定义 + 脚本打标测试。"""
+
+    def test_default_tag_schema_empty(self):
+        """全新环境：tag_schema 为空（dimensions: []）。"""
+        # 本测试模块 setup_module 用的是临时空目录，tag_schema.json 不存在
+        schema = store.get_tag_schema()
+        assert schema == {"dimensions": []}
+
+    def test_set_tag_schema_cleans_input(self):
+        """set_tag_schema 清洗：去空白、去重、长度限制、维度名去重。"""
+        schema = store.set_tag_schema({
+            "dimensions": [
+                {"name": "数仓层", "values": ["O层", " C层 ", "", "O层", "C层"]},  # 含空白、空、重复
+                {"name": "业务线", "values": ["个人借据"]},
+                {"name": "", "values": ["x"]},  # 空维度名 → 丢弃
+                {"name": "数仓层", "values": ["D层"]},  # 重名维度 → 后者覆盖前者（按清洗顺序保留首次出现的）
+            ]
+        })
+        dims = schema["dimensions"]
+        # 重名维度：保留首次（数仓层），第二个被丢弃
+        dim_names = [d["name"] for d in dims]
+        assert dim_names.count("数仓层") == 1
+        assert "业务线" in dim_names
+        assert "" not in dim_names  # 空维度名被丢
+        # 数仓层的 values 去重 + 去空白
+        layer_dim = next(d for d in dims if d["name"] == "数仓层")
+        assert layer_dim["values"] == ["O层", "C层"]  # " C层 " 去空白为 "C层"，重复 O层 去重，空值丢
+
+    def test_set_script_tags(self):
+        """给单个脚本打标（全量替换 tags）。"""
+        store.save_script(_make_result("tag-s1"))
+        result = store.set_script_tags("tag-s1", ["C层", "个人借据", "C层"])  # 含重复
+        assert result is not None
+        assert result.tags == ["C层", "个人借据"]  # 去重
+        # 重新读取验证持久化
+        reloaded = store.get_script("tag-s1")
+        assert reloaded.tags == ["C层", "个人借据"]
+
+    def test_set_script_tags_empty_clears(self):
+        """空 tags 数组清空脚本标签。"""
+        store.save_script(_make_result("tag-s2"))
+        store.set_script_tags("tag-s2", ["C层"])
+        assert store.get_script("tag-s2").tags == ["C层"]
+        # 清空
+        store.set_script_tags("tag-s2", [])
+        assert store.get_script("tag-s2").tags == []
+
+    def test_set_script_tags_nonexistent_returns_none(self):
+        """给不存在的脚本打标返回 None（不抛错）。"""
+        assert store.set_script_tags("nonexistent-id", ["x"]) is None
+
+    def test_batch_set_script_tags(self):
+        """批量给多个脚本打同一组标签。"""
+        store.save_script(_make_result("batch-s1"))
+        store.save_script(_make_result("batch-s2"))
+        result = store.batch_set_script_tags(["batch-s1", "batch-s2", "nonexistent"], ["C层", "个人借据"])
+        assert set(result["updated"]) == {"batch-s1", "batch-s2"}
+        assert len(result["failed"]) == 1
+        assert result["failed"][0]["id"] == "nonexistent"
+        # 验证两个脚本的 tags 都被设置
+        assert store.get_script("batch-s1").tags == ["C层", "个人借据"]
+        assert store.get_script("batch-s2").tags == ["C层", "个人借据"]
+
+    def test_old_script_without_tags_loads_as_empty(self):
+        """旧脚本（无 tags 字段）反序列化为空数组（向后兼容）。"""
+        # 直接写一个不含 tags 字段的脚本 JSON，模拟旧数据
+        result = _make_result("old-s1")
+        raw = result.model_dump()
+        del raw["tags"]  # 模拟旧版本存储的数据
+        store.SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(store.SCRIPTS_DIR / "old-s1.json", "w", encoding="utf-8") as f:
+            # default=str 处理 datetime（与 store._write_json 一致）
+            json.dump(raw, f, default=str)
+        # 读取：pydantic 默认值兜底为空数组
+        loaded = store.get_script("old-s1")
+        assert loaded.tags == []
+
+    def test_list_scripts_includes_tags(self):
+        """list_scripts 返回的摘要包含 tags 字段。"""
+        store.save_script(_make_result("list-s1"))
+        store.set_script_tags("list-s1", ["C层"])
+        summaries = store.list_scripts()
+        s1 = next(s for s in summaries if s.analysis_id == "list-s1")
+        assert s1.tags == ["C层"]
+
+    def test_tag_schema_export_import_roundtrip(self):
+        """导出导入包含 tag_schema，往返一致。"""
+        store.set_tag_schema({"dimensions": [{"name": "数仓层", "values": ["O层", "C层"]}]})
+        store.save_script(_make_result("exp-s1"))
+        store.set_script_tags("exp-s1", ["C层"])
+
+        exported = store.export_all()
+        assert "tag_schema" in exported
+        assert exported["tag_schema"]["dimensions"][0]["name"] == "数仓层"
+        # 脚本的 tags 在 scripts 里
+        assert exported["scripts"]["exp-s1"]["tags"] == ["C层"]
+
+        # 导入回来
+        store.import_all(exported)
+        re_schema = store.get_tag_schema()
+        assert re_schema["dimensions"][0]["values"] == ["O层", "C层"]
+        assert store.get_script("exp-s1").tags == ["C层"]
+
+    def test_import_without_tag_schema_defaults_empty(self):
+        """旧版导入文件（无 tag_schema 字段）导入后 tag_schema 为空（兼容）。"""
+        store.import_all({"version": 1, "tables": {}, "edges": [], "scripts": {}})
+        assert store.get_tag_schema() == {"dimensions": []}

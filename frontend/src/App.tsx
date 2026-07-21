@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { ConfigProvider, Layout, Button, Modal, message, Tag, Space, Popconfirm, Segmented } from "antd";
-import { PlusOutlined, SettingOutlined, DownloadOutlined, UploadOutlined } from "@ant-design/icons";
+import { PlusOutlined, SettingOutlined, DownloadOutlined, UploadOutlined, TagsOutlined } from "@ant-design/icons";
 import ScriptList from "./components/ScriptList";
 import ScriptEditor from "./components/ScriptEditor";
 import DatabaseConfigForm from "./components/DatabaseConfig";
@@ -9,15 +9,19 @@ import LineageGraph from "./components/LineageGraph";
 import type { FocusTarget } from "./components/LineageGraph";
 import SearchBox, { type SearchTarget } from "./components/SearchBox";
 import PreprocessRulesConfig from "./components/PreprocessRulesConfig";
+import TagSchemaConfig from "./components/TagSchemaConfig";
 import BatchImport from "./components/BatchImport";
 import {
   submitAnalysis, listScripts, getScript, deleteScript,
   renameScript, getGlobalGraph, getPreprocessRules, setPreprocessRules,
   exportData, importData,
+  getTagSchema, setTagSchema as apiSetTagSchema,
+  setScriptTags as apiSetScriptTags, batchSetScriptTags,
 } from "./api/client";
 import type {
   DatabaseConfig as DatabaseConfigType, AnalysisResult,
   ScriptSummary, GlobalGraph, PreprocessRule,
+  TagSchema, TagDimension,
 } from "./types";
 import { GLOBAL_ID } from "./types";
 
@@ -55,12 +59,22 @@ function App() {
   const [preprocessRules, setPreprocessRulesDraft] = useState<PreprocessRule[]>([]);
   const [rulesLoading, setRulesLoading] = useState(false);
 
+  // 标签维度定义 + 选中筛选标签（扁平集合）。
+  // 维度信息外置在 tagSchema，脚本只存扁平 tags 数组，筛选时按维度分组做命中判断。
+  const [tagSchema, setTagSchema] = useState<TagSchema>({ dimensions: [] });
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  // 标签维度设置弹窗的编辑草稿 + 开关
+  const [tagSchemaModalOpen, setTagSchemaModalOpen] = useState(false);
+  const [tagSchemaDraft, setTagSchemaDraft] = useState<TagDimension[]>([]);
+  const [tagSchemaSaving, setTagSchemaSaving] = useState(false);
+
   // === 加载数据 ===
   const refreshAll = useCallback(async () => {
     try {
-      const [s, g] = await Promise.all([listScripts(), getGlobalGraph()]);
+      const [s, g, ts] = await Promise.all([listScripts(), getGlobalGraph(), getTagSchema()]);
       setScripts(s);
       setGlobalGraph(g);
+      setTagSchema(ts);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "加载数据失败";
       message.error(msg);
@@ -154,6 +168,73 @@ function App() {
     }
   };
 
+  // === 标签：单个脚本打标 ===
+  const handleSetScriptTags = async (id: string, tags: string[]) => {
+    try {
+      await apiSetScriptTags(id, tags);
+      // 本地更新 scripts 的 tags（避免整页 refresh）
+      setScripts((prev) => prev.map((s) => s.analysis_id === id ? { ...s, tags } : s));
+    } catch (e: unknown) {
+      message.error(errMsg(e, "打标签失败"));
+    }
+  };
+
+  // === 标签：批量打标 ===
+  const handleBatchSetTags = async (ids: string[], tags: string[]) => {
+    try {
+      const result = await batchSetScriptTags(ids, tags);
+      // 本地更新命中的脚本 tags
+      const updatedSet = new Set(result.updated);
+      setScripts((prev) => prev.map((s) => updatedSet.has(s.analysis_id) ? { ...s, tags } : s));
+      if (result.failed.length > 0) {
+        message.warning(`${result.updated.length} 个成功，${result.failed.length} 个失败`);
+      } else {
+        message.success(`已为 ${result.updated.length} 个脚本打标`);
+      }
+    } catch (e: unknown) {
+      message.error(errMsg(e, "批量打标失败"));
+    }
+  };
+
+  // isGlobalView 提前定义（hitScriptIds 和后续 JSX 都依赖它）
+  const isGlobalView = selectedScriptId === GLOBAL_ID;
+
+  // 筛选命中脚本 id 集合（语义丙：维度内 OR、维度间 AND）。
+  // 仅在全局视图且有筛选标签时计算；无筛选时返回空 Set（调用方据此判断「不筛选」）。
+  // 实现思路：把选中的扁平标签按维度分组（查 tagSchema 得到每个标签所属维度），
+  // 对每个维度，脚本须含该维度下任意一个选中标签；所有维度都满足才命中。
+  const hitScriptIds = useMemo(() => {
+    if (!isGlobalView || selectedTags.length === 0) return new Set<string>();
+    // 标签值 → 所属维度名（一个标签值只属一个维度；若跨维度重名，取第一个）
+    const tagToDim = new Map<string, string>();
+    for (const dim of tagSchema.dimensions) {
+      for (const v of dim.values) {
+        if (!tagToDim.has(v)) tagToDim.set(v, dim.name);
+      }
+    }
+    // 选中的标签按维度分组
+    const selectedByDim = new Map<string, Set<string>>();
+    for (const t of selectedTags) {
+      const dim = tagToDim.get(t);
+      if (!dim) continue; // 孤儿标签（维度已删），忽略
+      let set = selectedByDim.get(dim);
+      if (!set) { set = new Set(); selectedByDim.set(dim, set); }
+      set.add(t);
+    }
+    const requiredDims = [...selectedByDim.keys()];
+    if (requiredDims.length === 0) return new Set<string>();
+    const hit = new Set<string>();
+    for (const s of scripts) {
+      // 每个维度内：脚本的 tags 与该维度选中标签有交集即满足
+      const allDimsSatisfied = requiredDims.every((dim) => {
+        const wanted = selectedByDim.get(dim)!;
+        return s.tags.some((t) => wanted.has(t));
+      });
+      if (allDimsSatisfied) hit.add(s.analysis_id);
+    }
+    return hit;
+  }, [scripts, selectedTags, tagSchema, isGlobalView]);
+
   // === 预处理规则：打开时拉取，保存时推送 ===
   const handleOpenRules = async () => {
     setRulesModalOpen(true);
@@ -178,6 +259,38 @@ function App() {
       message.error(errMsg(e, "保存预处理规则失败"));
     } finally {
       setRulesLoading(false);
+    }
+  };
+
+  // === 标签维度定义：打开时拉取当前 schema 作为草稿，保存时推送 ===
+  const handleOpenTagSchema = async () => {
+    setTagSchemaModalOpen(true);
+    // 用已加载的 tagSchema 作为草稿初值（App 启动时已 refreshAll 拉过）
+    setTagSchemaDraft(tagSchema.dimensions.map((d) => ({ ...d, values: [...d.values] })));
+    // 兜底：再拉一次最新值（避免本地 tagSchema 是旧缓存）
+    try {
+      const fresh = await getTagSchema();
+      setTagSchemaDraft(fresh.dimensions.map((d) => ({ ...d, values: [...d.values] })));
+    } catch (e: unknown) {
+      // 拉取失败不阻塞，用本地缓存值
+    }
+  };
+
+  const handleSaveTagSchema = async () => {
+    setTagSchemaSaving(true);
+    try {
+      const updated = await apiSetTagSchema({ dimensions: tagSchemaDraft });
+      setTagSchema(updated);
+      // 维度变更后，已有但失效的筛选标签（孤儿）清掉，避免命中集合异常
+      const validTags = new Set<string>();
+      for (const dim of updated.dimensions) for (const v of dim.values) validTags.add(v);
+      setSelectedTags((prev) => prev.filter((t) => validTags.has(t)));
+      message.success("标签维度已保存");
+      setTagSchemaModalOpen(false);
+    } catch (e: unknown) {
+      message.error(errMsg(e, "保存标签维度失败"));
+    } finally {
+      setTagSchemaSaving(false);
     }
   };
 
@@ -218,7 +331,7 @@ function App() {
 
   // 搜索框的节点/边数据（useMemo 化，避免每次渲染重建数组击穿 SearchBox 内部 useMemo）。
   // 边加 _edgeId 前缀（e- 脚本视图 / ge- 全局视图），与 LineageGraph 实际渲染的边 id 一致。
-  const isGlobalView = selectedScriptId === GLOBAL_ID;
+  // isGlobalView 已在前面（hitScriptIds useMemo 前）定义，此处复用。
   const searchNodes = useMemo(
     () => (isGlobalView ? globalGraph?.nodes : selectedResult?.visualization.nodes) || [],
     [isGlobalView, selectedResult, globalGraph],
@@ -298,6 +411,13 @@ function App() {
               预处理规则
             </Button>
             <Button
+              icon={<TagsOutlined />}
+              onClick={handleOpenTagSchema}
+              style={{ background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,0.3)" }}
+            >
+              标签维度
+            </Button>
+            <Button
               type="primary"
               icon={<PlusOutlined />}
               onClick={() => setModalOpen(true)}
@@ -319,6 +439,13 @@ function App() {
                 onRename={handleRename}
                 tableCount={tableCount}
                 edgeCount={edgeCount}
+                tagSchema={tagSchema}
+                selectedTags={selectedTags}
+                onSelectedTagsChange={setSelectedTags}
+                hitScriptIds={hitScriptIds}
+                isGlobalView={isGlobalView}
+                onSetScriptTags={handleSetScriptTags}
+                onBatchSetTags={handleBatchSetTags}
               />
             </div>
 
@@ -331,6 +458,8 @@ function App() {
                 highlightSeq={highlightSeq}
                 onEdgeSelectSeq={setHighlightSeq}
                 focusTarget={focusTarget}
+                // 标签筛选：仅全局视图 + 有筛选标签时传命中脚本集合，否则 null（不过滤）
+                tagFilteredScriptIds={isGlobalView && selectedTags.length > 0 ? hitScriptIds : null}
               />
             </div>
 
@@ -392,6 +521,7 @@ function App() {
         ) : (
           <BatchImport
             dbConfig={dbConfig}
+            tagSchema={tagSchema}
             onSuccess={async () => {
               setModalOpen(false);
               await refreshAll();
@@ -413,6 +543,21 @@ function App() {
         destroyOnHidden
       >
         <PreprocessRulesConfig value={preprocessRules} onChange={setPreprocessRulesDraft} />
+      </Modal>
+
+      {/* 标签维度定义弹窗（管理员维护维度名 + 可选标签值）*/}
+      <Modal
+        title="标签维度定义"
+        open={tagSchemaModalOpen}
+        onCancel={() => setTagSchemaModalOpen(false)}
+        onOk={handleSaveTagSchema}
+        confirmLoading={tagSchemaSaving}
+        okText="保存"
+        cancelText="取消"
+        width={640}
+        destroyOnHidden
+      >
+        <TagSchemaConfig value={tagSchemaDraft} onChange={setTagSchemaDraft} />
       </Modal>
     </ConfigProvider>
   );
