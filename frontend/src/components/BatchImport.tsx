@@ -1,8 +1,8 @@
 import React, { useState } from "react";
-import { Upload, Button, Space, Typography, List, Tag, message } from "antd";
-import { InboxOutlined, DeleteOutlined, FileTextOutlined } from "@ant-design/icons";
+import { Upload, Button, Space, Typography, List, Tag, Checkbox, Popover, message } from "antd";
+import { InboxOutlined, DeleteOutlined, FileTextOutlined, TagOutlined } from "@ant-design/icons";
 import { unzipSync, strFromU8 } from "fflate";
-import type { AnalysisResult, DatabaseConfig } from "../types";
+import type { AnalysisResult, DatabaseConfig, TagSchema } from "../types";
 import { submitBatchAnalysis } from "../api/client";
 
 const { Dragger } = Upload;
@@ -21,6 +21,8 @@ interface Props {
   dbConfig: DatabaseConfig;
   /** 批量分析成功后的回调（App 用来关闭 Modal + 刷新列表） */
   onSuccess: () => void;
+  /** 标签维度定义表（用于批量上传时给整批统一打标）。 */
+  tagSchema: TagSchema;
 }
 
 /**
@@ -39,9 +41,11 @@ interface Props {
  *   - 同名文件覆盖（去重），避免重复导入
  *   - 非 .sql 文件（zip 内或直接选）被忽略
  */
-const BatchImport: React.FC<Props> = ({ dbConfig, onSuccess }) => {
+const BatchImport: React.FC<Props> = ({ dbConfig, onSuccess, tagSchema }) => {
   const [files, setFiles] = useState<SqlFile[]>([]);
   const [loading, setLoading] = useState(false);
+  // 整批统一打标的草稿（可选）。留空则上传后脚本 tags 为空。
+  const [batchTags, setBatchTags] = useState<string[]>([]);
 
   /** 把新文件并入列表（同名覆盖） */
   const mergeFiles = (incoming: SqlFile[]) => {
@@ -119,6 +123,7 @@ const BatchImport: React.FC<Props> = ({ dbConfig, onSuccess }) => {
       const results: AnalysisResult[] = await submitBatchAnalysis(
         files,
         hasDb ? dbConfig : null,
+        batchTags,
       );
       hide();
       const got = results.length;
@@ -128,6 +133,7 @@ const BatchImport: React.FC<Props> = ({ dbConfig, onSuccess }) => {
         4,
       );
       setFiles([]);
+      setBatchTags([]);
       onSuccess();
     } catch (e: unknown) {
       hide();
@@ -199,6 +205,60 @@ const BatchImport: React.FC<Props> = ({ dbConfig, onSuccess }) => {
             )}
           />
         </>
+      )}
+
+      {/* 可选：整批统一打标。留空则上传后脚本 tags 为空，后续可在列表逐条补。 */}
+      {tagSchema.dimensions.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <Popover
+            trigger="click"
+            placement="topLeft"
+            title="为整批脚本打标签（所有文件统一）"
+            content={
+              <div style={{ width: 240, maxHeight: 320, overflowY: "auto", padding: "4px 0" }}>
+                {tagSchema.dimensions.map((dim) => (
+                  <div key={dim.name} style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 12, color: "#666", marginBottom: 4, fontWeight: 600 }}>{dim.name}</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 8px" }}>
+                      {dim.values.map((v) => (
+                        <Checkbox
+                          key={v}
+                          checked={batchTags.includes(v)}
+                          onChange={(e) => {
+                            if (e.target.checked) setBatchTags([...batchTags, v]);
+                            else setBatchTags(batchTags.filter((t) => t !== v));
+                          }}
+                          style={{ fontSize: 12 }}
+                        >
+                          {v}
+                        </Checkbox>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            }
+          >
+            <Button icon={<TagOutlined />} style={{ width: "100%", justifyContent: "flex-start" }}>
+              打标签（可选）{batchTags.length > 0 ? ` ${batchTags.length} 个` : ""}
+            </Button>
+          </Popover>
+          {batchTags.length > 0 && (
+            <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 2 }}>
+              {batchTags.map((t) => (
+                <Tag
+                  key={t}
+                  color="purple"
+                  closable
+                  onClose={() => setBatchTags(batchTags.filter((x) => x !== t))}
+                  style={{ fontSize: 11, margin: 0 }}
+                >
+                  {t}
+                </Tag>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       <Button

@@ -39,6 +39,31 @@ class BatchAnalyzeRequest(BaseModel):
     """
     files: list[BatchFileItem] = Field(..., min_length=1)
     database_config: DatabaseConfig | None = None
+    # 可选：整批脚本统一打上这组标签（扁平标签数组，如 ["C层","个人借据"]）。
+    # 留空则每个脚本 tags 为空，后续可在列表里逐条补标。
+    tags: list[str] = Field(default_factory=list)
+
+
+class SetScriptTagsRequest(BaseModel):
+    """给单个脚本打标签（全量替换）。"""
+    tags: list[str] = Field(default_factory=list)
+
+
+class BatchSetTagsRequest(BaseModel):
+    """批量给多个脚本打同一组标签（全量替换每个脚本的 tags）。"""
+    script_ids: list[str] = Field(..., min_length=1)
+    tags: list[str] = Field(default_factory=list)
+
+
+class TagDimension(BaseModel):
+    """单个标签维度定义。维度名和标签值完全由用户定义，代码不预设。"""
+    name: str = Field(..., min_length=1, max_length=50)
+    values: list[str] = Field(default_factory=list)
+
+
+class TagSchema(BaseModel):
+    """标签维度定义表。部署后默认空，由管理员通过设置面板填充。"""
+    dimensions: list[TagDimension] = Field(default_factory=list)
 
 
 class PreprocessRule(BaseModel):

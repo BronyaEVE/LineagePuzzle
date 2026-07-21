@@ -46,6 +46,10 @@ class AnalysisResult(BaseModel):
     #   ast_only             —— 无 DB 连接，纯 AST 提取
     #   ast_with_db_validation —— 有 DB 连接，AST 提取 + 表结构校验/列补充
     extraction_mode: str = "ast_only"
+    # 扁平多标签：脚本所属的分类标签（如 ["C层", "个人借据"]）。
+    # 维度信息外置在 tag_schema.json，脚本本身不存维度结构，保证维度增删不影响脚本数据。
+    # 旧脚本无此字段时反序列化为空数组（pydantic 默认值兜底，向后兼容）。
+    tags: list[str] = Field(default_factory=list)
 
 
 class ScriptSummary(BaseModel):
@@ -54,6 +58,8 @@ class ScriptSummary(BaseModel):
     created_at: datetime
     statement_count: int = 0
     table_count: int = 0
+    # 扁平标签数组，用于列表展示 + 筛选器命中判断
+    tags: list[str] = Field(default_factory=list)
 
 
 class GlobalEdge(BaseModel):

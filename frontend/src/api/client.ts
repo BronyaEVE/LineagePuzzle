@@ -1,6 +1,7 @@
 import type {
   AnalysisResult, AnalyzeRequest, DatabaseConfig,
   ScriptSummary, GlobalGraph, ImpactAnalysis, PreprocessRule,
+  TagSchema, BatchSetTagsResult,
 } from "../types";
 
 const API_BASE = "/api";
@@ -56,16 +57,18 @@ export async function submitAnalysis(payload: AnalyzeRequest): Promise<AnalysisR
  * 批量分析：一次提交多个 SQL 文件，每个产出独立脚本。
  *
  * files 为前端已读取（zip 已解压）的 {name, content} 数组。
+ * tags 可选：整批脚本统一打上这组标签（前端勾选「所有文件打上以上标签」时传入）。
  * 批量可能涉及大量 SQL，超时放宽到 60s（默认 15s 对批量不够）。
  */
 export async function submitBatchAnalysis(
   files: { name: string; content: string }[],
   dbConfig: DatabaseConfig | null,
+  tags: string[] = [],
 ): Promise<AnalysisResult[]> {
   return request<AnalysisResult[]>(`${API_BASE}/analyze-batch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ files, database_config: dbConfig }),
+    body: JSON.stringify({ files, database_config: dbConfig, tags }),
     timeout: 60000,
   });
 }
@@ -128,4 +131,38 @@ export async function importData(payload: Record<string, unknown>): Promise<void
 
 export async function impactAnalysis(table: string): Promise<ImpactAnalysis> {
   return request<ImpactAnalysis>(`${API_BASE}/impact-analysis/${encodeURIComponent(table)}`);
+}
+
+// === 标签维度定义 + 脚本打标 ===
+
+/** 获取标签维度定义表（部署后默认空，由管理员填充）。 */
+export async function getTagSchema(): Promise<TagSchema> {
+  return request<TagSchema>(`${API_BASE}/tag-schema`);
+}
+
+/** 更新标签维度定义表（全量替换，管理员操作）。 */
+export async function setTagSchema(schema: TagSchema): Promise<TagSchema> {
+  return request<TagSchema>(`${API_BASE}/tag-schema`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(schema),
+  });
+}
+
+/** 给单个脚本打标签（全量替换 tags 数组）。返回更新后的脚本。 */
+export async function setScriptTags(scriptId: string, tags: string[]): Promise<AnalysisResult> {
+  return request<AnalysisResult>(`${API_BASE}/scripts/${scriptId}/tags`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tags }),
+  });
+}
+
+/** 批量给多个脚本打同一组标签。返回成功/失败列表。 */
+export async function batchSetScriptTags(scriptIds: string[], tags: string[]): Promise<BatchSetTagsResult> {
+  return request<BatchSetTagsResult>(`${API_BASE}/scripts/batch-tags`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ script_ids: scriptIds, tags }),
+  });
 }

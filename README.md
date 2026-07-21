@@ -37,6 +37,7 @@ Modern data platforms (Dataphin, WhaleOps, cloud DataWorks, etc.) and databases 
 - **Table-level + Column-level** — not just table flow, click an edge to see `target column ← source columns` and transform expressions (`SUM(amount)`, `price*qty`)
 - **Impact analysis** — click a node to highlight all upstream (cyan) and downstream (orange) paths; diamond dependencies fully covered
 - **Node collapse** — in complex graphs, click a node's +/- button to collapse/expand upstream or downstream chains, focus on local structure
+- **Tag filtering** — tag scripts with flat multi-dimension labels (e.g. `[C-layer, retail-loans]`); filter the global graph to show only tagged scripts' lineage, like Excel autofilter
 - **Parameterized SQL** — supports ETL template placeholders like `${icl_schema}`, replaced via Preprocess Rules (param mapping is a built-in rule type)
 - **Batch import** — drag in multiple `.sql` files or a `.zip` archive; each file becomes an independent script
 - **Zero-install deployment** — portable edition bundles the Python runtime; just double-click on the target machine
@@ -70,7 +71,7 @@ Two paths depending on your environment:
 
 > Best for: air-gapped environments, users who don't want to fiddle with Python/Node.
 
-1. Download `LineagePuzzle-v1.0.0-portable.zip` (~33 MB) from the [Releases](../../releases/latest) page
+1. Download `LineagePuzzle-v2.0.0-portable.zip` (~33 MB) from the [Releases](../../releases/latest) page
 2. Extract to any folder (avoid Chinese characters and spaces in the path)
 3. Double-click `run.bat`
 4. Open **http://localhost:8000** in your browser
@@ -158,7 +159,7 @@ Switch to the "Batch Import" tab in the "New Analysis" dialog, drag in multiple 
 
 ### Others
 
-- **Search box**: fuzzy-match table/column names; selecting one auto-focuses and highlights
+- **Search box**: fuzzy-match table/column names. Searching a table name triggers impact analysis (same as clicking the node); searching a column highlights all edges that column flows through. Selecting the same target repeatedly always re-focuses
 - **Preprocess Rules**: configure regex replacement rules (name/pattern/replacement/enabled) to handle weird SQL formats; param mapping is a built-in rule type (id prefixed `param-`), auto-applied during analysis
 - **Import/Export**: one-click backup/migration of all lineage data (JSON)
 - **Graph export**: export the current graph as PNG / standalone HTML
@@ -186,11 +187,11 @@ Switch to the "Batch Import" tab in the "New Analysis" dialog, drag in multiple 
 LineagePuzzle/
 ├── backend/
 │   ├── app/
-│   │   ├── api/           # FastAPI routes (17 REST endpoints)
+│   │   ├── api/           # FastAPI routes (21 REST endpoints)
 │   │   ├── services/      # lineage extraction, storage, preprocess rules (core logic)
 │   │   ├── models/        # Pydantic data models
 │   │   └── main.py        # FastAPI app + static file hosting
-│   ├── tests/             # 273 tests (93% coverage)
+│   ├── tests/             # 292 tests (93% coverage)
 │   └── requirements.txt   # 9 core dependencies
 ├── frontend/
 │   └── src/
@@ -209,7 +210,7 @@ LineagePuzzle/
 ## 📊 Testing
 
 ```bash
-cd backend && python -m pytest    # 273 passed, 93% coverage
+cd backend && python -m pytest    # 292 passed, 93% coverage
 ```
 
 Test files (11 files, covering all layers):
@@ -219,8 +220,8 @@ Test files (11 files, covering all layers):
 | `test_preprocessor` | 33 | Comment stripping, DO block extraction, transaction semicolons, preprocess rules |
 | `test_param_mapping` | 30 | Param replacement, preprocess rule CRUD, auto-migration |
 | `test_splitter` | 28 | Statement splitting, type detection, transaction blocks |
-| `test_api` | 46 | All 17 REST endpoints (e2e via TestClient) |
-| `test_store` | 41 | Persistence, impact analysis, export/import, path traversal guard |
+| `test_api` | 55 | All 21 REST endpoints (e2e via TestClient), tag endpoints, batch with tags |
+| `test_store` | 51 | Persistence, impact analysis, export/import, path traversal guard, tag schema + tagging |
 | `test_lineage_e2e` | 15 | End-to-end lineage: CASE WHEN, DO block, cross-schema, transactions |
 | `test_lineage_extractor` | 18 | Table-level lineage extraction, multi-source JOIN, temp table chains |
 | `test_column_lineage` | 18 | Column-level mapping, subquery passthrough, UPDATE lineage |

@@ -41,7 +41,9 @@ def setup_module():
     store.EDGES_FILE = store.DATA_DIR / "edges.jsonl"
     store.SCRIPTS_DIR = store.DATA_DIR / "scripts"
     store.PARAM_MAPPING_FILE = store.DATA_DIR / "param_mapping.json"
+    store.PREPROCESS_RULES_FILE = store.DATA_DIR / "preprocess_rules.json"
     store.LOCK_FILE = store.DATA_DIR / "store.lock"
+    store.TAG_SCHEMA_FILE = store.DATA_DIR / "tag_schema.json"
 
 
 def teardown_module():
@@ -53,7 +55,9 @@ def teardown_module():
         store.EDGES_FILE = store.DATA_DIR / "edges.jsonl"
         store.SCRIPTS_DIR = store.DATA_DIR / "scripts"
         store.PARAM_MAPPING_FILE = store.DATA_DIR / "param_mapping.json"
+        store.PREPROCESS_RULES_FILE = store.DATA_DIR / "preprocess_rules.json"
         store.LOCK_FILE = store.DATA_DIR / "store.lock"
+        store.TAG_SCHEMA_FILE = store.DATA_DIR / "tag_schema.json"
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +69,8 @@ def _clean_store():
     store._write_json(store.PREPROCESS_RULES_FILE, [])
     if store.PARAM_MAPPING_FILE.exists():
         store.PARAM_MAPPING_FILE.unlink()
+    # 清空标签维度定义
+    store._write_json(store.TAG_SCHEMA_FILE, {"dimensions": []})
     # 清空 scripts 目录
     if store.SCRIPTS_DIR.exists():
         for f in store.SCRIPTS_DIR.glob("*.json"):
@@ -599,3 +605,102 @@ class TestImpactAnalysis:
         self._setup_chain()
         r = client.get("/api/impact-analysis/public.summary")
         assert r.json()["downstream"] == []
+
+
+# ============================================================
+# 标签维度定义 + 脚本打标
+# ============================================================
+
+class TestTagEndpoints:
+    """标签相关端点：tag-schema CRUD、单脚本打标、批量打标、batch 带 tags。"""
+
+    def _create_script(self, script_id_hint: str = "") -> str:
+        """辅助：分析一个脚本，返回 analysis_id。"""
+        r = client.post("/api/analyze", json={
+            "script": f"INSERT INTO {script_id_hint or 'report'} SELECT * FROM orders",
+        })
+        assert r.status_code == 200
+        return r.json()["analysis_id"]
+
+    def test_tag_schema_default_empty(self):
+        """全新环境 tag-schema 为空。"""
+        r = client.get("/api/tag-schema")
+        assert r.status_code == 200
+        assert r.json() == {"dimensions": []}
+
+    def test_set_tag_schema(self):
+        """PUT tag-schema 全量替换 + 清洗。"""
+        r = client.put("/api/tag-schema", json={
+            "dimensions": [
+                {"name": "数仓层", "values": ["O层", "C层"]},
+                {"name": "业务线", "values": ["个人借据"]},
+            ],
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data["dimensions"]) == 2
+        assert data["dimensions"][0]["name"] == "数仓层"
+        assert data["dimensions"][0]["values"] == ["O层", "C层"]
+
+    def test_set_script_tags(self):
+        """给单个脚本打标（PUT /scripts/{id}/tags）。"""
+        sid = self._create_script()
+        r = client.put(f"/api/scripts/{sid}/tags", json={"tags": ["C层", "个人借据"]})
+        assert r.status_code == 200
+        assert r.json()["tags"] == ["C层", "个人借据"]
+        # 验证持久化：get_script 返回的 tags 一致
+        assert client.get(f"/api/scripts/{sid}").json()["tags"] == ["C层", "个人借据"]
+
+    def test_set_script_tags_not_found(self):
+        """给不存在的脚本打标返回 404。"""
+        r = client.put("/api/scripts/nonexistent-id/tags", json={"tags": ["x"]})
+        assert r.status_code == 404
+
+    def test_batch_set_script_tags(self):
+        """批量给多个脚本打同一组标签。"""
+        sid1 = self._create_script("r1")
+        sid2 = self._create_script("r2")
+        r = client.post("/api/scripts/batch-tags", json={
+            "script_ids": [sid1, sid2, "nonexistent"],
+            "tags": ["C层"],
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert set(data["updated"]) == {sid1, sid2}
+        assert len(data["failed"]) == 1
+
+    def test_batch_analyze_with_tags(self):
+        """批量分析时带 tags：每个产出脚本都带上这组标签。"""
+        r = client.post("/api/analyze-batch", json={
+            "files": [
+                {"name": "a.sql", "content": "INSERT INTO ta SELECT * FROM src"},
+                {"name": "b.sql", "content": "INSERT INTO tb SELECT * FROM src"},
+            ],
+            "tags": ["C层", "个人借据"],
+        })
+        assert r.status_code == 200
+        for script in r.json():
+            assert script["tags"] == ["C层", "个人借据"]
+
+    def test_batch_analyze_without_tags_defaults_empty(self):
+        """批量分析不带 tags：脚本 tags 为空（默认）。"""
+        r = client.post("/api/analyze-batch", json={
+            "files": [{"name": "a.sql", "content": "INSERT INTO ta SELECT * FROM src"}],
+        })
+        assert r.status_code == 200
+        assert r.json()[0]["tags"] == []
+
+    def test_list_scripts_includes_tags(self):
+        """/scripts 摘要含 tags 字段。"""
+        sid = self._create_script()
+        client.put(f"/api/scripts/{sid}/tags", json={"tags": ["C层"]})
+        scripts = client.get("/api/scripts").json()
+        s = next(x for x in scripts if x["analysis_id"] == sid)
+        assert s["tags"] == ["C层"]
+
+    def test_export_includes_tag_schema(self):
+        """/export 返回里含 tag_schema 字段。"""
+        client.put("/api/tag-schema", json={"dimensions": [{"name": "数仓层", "values": ["O层"]}]})
+        exported = client.get("/api/export").json()
+        assert "tag_schema" in exported
+        assert exported["tag_schema"]["dimensions"][0]["name"] == "数仓层"

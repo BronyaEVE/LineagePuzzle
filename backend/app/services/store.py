@@ -33,6 +33,10 @@ LOCK_FILE = DATA_DIR / "store.lock"
 # 旧 param_mapping.json 在首次启动时迁移到这里。
 PARAM_MAPPING_FILE = DATA_DIR / "param_mapping.json"  # 保留用于迁移检测，迁移后可删
 PREPROCESS_RULES_FILE = DATA_DIR / "preprocess_rules.json"
+# 标签维度定义表：管理员维护，定义有哪些维度 + 每个维度下的可选标签值。
+# 脚本本身只存扁平 tags 数组（如 ["C层","个人借据"]），维度归属由此表查得。
+# 部署后默认空（dimensions: []），由管理员通过设置面板填充实际维度名和标签值。
+TAG_SCHEMA_FILE = DATA_DIR / "tag_schema.json"
 
 # script_id 合法字符集：字母数字、下划线、连字符（analysis_id 是 uuid4，必然匹配）。
 # 用严格正则防止路径遍历（../、绝对路径、盘符等都会被拒绝）。
@@ -170,6 +174,7 @@ def list_scripts() -> list[ScriptSummary]:
                 created_at=data.get("created_at", ""),
                 statement_count=len(stmts),
                 table_count=len(tables_in_script),
+                tags=data.get("tags", []),
             ))
         except Exception:
             continue
@@ -451,6 +456,111 @@ def set_param_mapping(mapping: dict[str, str]) -> dict[str, str]:
 
 
 # ============================================================
+# 标签维度 + 脚本打标
+# ============================================================
+
+def get_tag_schema() -> dict:
+    """返回标签维度定义表。
+
+    结构: {"dimensions": [{"name": "数仓层", "values": ["O层","C层",...]}]}
+
+    部署后默认空（dimensions: []），由管理员通过设置面板填充。
+    维度名和标签值完全由用户定义，代码层不预设任何维度。
+    """
+    return _read_json(TAG_SCHEMA_FILE, {"dimensions": []})
+
+
+def set_tag_schema(schema: dict) -> dict:
+    """更新标签维度定义表（全量替换），在文件锁保护下写入。
+
+    清洗规则：
+      - dimensions 必须是 list，每项 {name, values}
+      - name 非空字符串，去首尾空白，长度 ≤ 50
+      - values 是非空字符串列表，去重（保持顺序）
+      - 同一 schema 内 dimension name 去重（重名后者覆盖前者）
+    """
+    raw_dims = schema.get("dimensions") if isinstance(schema, dict) else None
+    cleaned_dims: list[dict] = []
+    seen_dim_names: set[str] = set()
+    if isinstance(raw_dims, list):
+        for d in raw_dims if isinstance(raw_dims, list) else []:
+            if not isinstance(d, dict):
+                continue
+            name = str(d.get("name", "")).strip()
+            if not name or len(name) > 50 or name in seen_dim_names:
+                continue
+            raw_values = d.get("values") if isinstance(d.get("values"), list) else []
+            values: list[str] = []
+            seen_values: set[str] = set()
+            for v in raw_values:
+                sv = str(v).strip()
+                if sv and sv not in seen_values:
+                    values.append(sv)
+                    seen_values.add(sv)
+            cleaned_dims.append({"name": name, "values": values})
+            seen_dim_names.add(name)
+    with _store_lock():
+        _write_json(TAG_SCHEMA_FILE, {"dimensions": cleaned_dims})
+    return {"dimensions": cleaned_dims}
+
+
+def set_script_tags(script_id: str, tags: list[str]) -> AnalysisResult | None:
+    """给脚本打标签（全量替换脚本的 tags 数组）。
+
+    只改 scripts/{id}.json，不影响全局表/边。
+    清洗：去空白、去重、长度 ≤ 50（标签值通常是短词）。
+    返回更新后的脚本，脚本不存在返回 None。
+    """
+    _validate_script_id(script_id)
+    # 清洗标签：去首尾空白、去空、去重（保持顺序）
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for t in tags:
+        st = str(t).strip()
+        if st and st not in seen and len(st) <= 50:
+            cleaned.append(st)
+            seen.add(st)
+    with _store_lock():
+        result = get_script(script_id)
+        if not result:
+            return None
+        result.tags = cleaned
+        result.updated_at = datetime.now()
+        script_path = SCRIPTS_DIR / f"{script_id}.json"
+        _write_json(script_path, result.model_dump())
+    return result
+
+
+def batch_set_script_tags(script_ids: list[str], tags: list[str]) -> dict:
+    """批量给多个脚本打同一组标签（全量替换每个脚本的 tags）。
+
+    用于批量上传/批量整理时给一批脚本统一打标。
+    返回 {updated: [成功 id], failed: [{id, reason}]}。
+    单个脚本失败不阻塞其他脚本（如脚本已被删除）。
+    """
+    # 清洗标签一次（避免每个脚本重复清洗）
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for t in tags:
+        st = str(t).strip()
+        if st and st not in seen and len(st) <= 50:
+            cleaned.append(st)
+            seen.add(st)
+    updated: list[str] = []
+    failed: list[dict] = []
+    for sid in script_ids:
+        try:
+            result = set_script_tags(sid, cleaned)
+            if result:
+                updated.append(sid)
+            else:
+                failed.append({"id": sid, "reason": "脚本不存在"})
+        except ValueError as e:
+            failed.append({"id": sid, "reason": str(e)})
+    return {"updated": updated, "failed": failed}
+
+
+# ============================================================
 # 导入导出（全量数据）
 # ============================================================
 
@@ -476,6 +586,8 @@ def export_all() -> dict:
         "preprocess_rules": get_preprocess_rules(),
         # 向后兼容：旧版导入文件里有 param_mapping 字段，迁移逻辑会处理
         "param_mapping": get_param_mapping(),
+        # 标签维度定义表（脚本的 tags 已包含在 scripts 里，无需单独导出）
+        "tag_schema": get_tag_schema(),
     }
 
 
@@ -513,6 +625,8 @@ def import_all(payload: dict) -> None:
                 for k, v in payload.get("param_mapping", {}).items()
                 if k and re.fullmatch(r"\w+", k) and str(v).strip()
             ])
+        # tag_schema（兼容旧版：无此字段时写空 schema）
+        _write_json(TAG_SCHEMA_FILE, payload.get("tag_schema", {"dimensions": []}))
 
 
 # ============================================================

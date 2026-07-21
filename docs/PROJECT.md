@@ -64,7 +64,7 @@ Traditional lineage tools require importing all scripts at once. This project ta
 ┌──────────────────────────────────────────────────────────────────────┐
 │                       Frontend (React + antd v6)                      │
 │                                                                      │
-│  Header: [Search] [Preprocess Rules] [Import/Export] [New Analysis]  │
+│  Header: [Search] [Preprocess Rules] [Tag Dimensions] [Import/Export] [New Analysis]  │
 │                                                                      │
 │  ┌──────────┐  ┌──────────────────────────┐  ┌──────────────────┐   │
 │  │ Script    │  │   Global / Script          │  │ Statement Panel  │   │
@@ -164,7 +164,7 @@ Step 6: Persistence             → save to JSON + update global graph (under fi
 | Click the "+N" badge | Re-expand the collapsed upstream/downstream chains |
 | Click an edge | Open the column-level lineage drawer (target col ← source col + transform); single-edge highlight |
 | Click a statement | All edges of that `seq` highlight in blue |
-| Search box | Fuzzy-match table/column names; on select, focus + highlight |
+| Search box | Fuzzy-match table/column names. Searching a table name = clicking that node (focus + impact analysis). Searching a column = highlight all edges it flows through. Re-selecting the same target always re-focuses |
 
 > **Collapse:** each node has two small +/- buttons (14px) at its inbound/outbound edge-contact points (top/bottom in TB layout, left/right in LR layout). Collapsing hides the entire upstream/downstream chain recursively. Collapse state resets when switching scripts or to the global graph.
 
@@ -181,11 +181,15 @@ Step 6: Persistence             → save to JSON + update global graph (under fi
 Supports **fuzzy matching of table and column names**:
 
 1. Type a keyword (e.g. "order")
-2. Dropdown shows all matching tables (● green dot) and columns (◆ diamond)
-3. Select a table node → graph auto-focuses that node + white-border glow
-4. Select a column → graph focuses the relevant edge + single-edge highlight + opens column drawer
+2. Dropdown shows all matching tables (● green dot) and columns (◇ diamond). Columns are **table-qualified** (`orders.id`), so columns of the same name on different tables appear as separate entries
+3. Select a table node → graph auto-focuses that node + triggers impact analysis (exactly the same as clicking the node: upstream/downstream bi-color highlight)
+4. Select a column → graph highlights **all edges that column flows through** (purple `#722ed1`) + fitView covers all their endpoints. A column that flows across multiple edges shows "(N transfers)" in the dropdown
 
 Search scope auto-switches with the current view: global view searches the global graph; script view searches the current script.
+
+> **Repeat search fix:** each selection is tagged with an incrementing `focusToken`, so re-selecting the same target (e.g. searching the same table twice in a row) always re-focuses — the React effect is guaranteed to re-run.
+
+> **Collapse-aware:** if the focused node/edge endpoints are hidden by a collapse, the collapse chain that blocks them is auto-expanded first, then focus applies (pendingFocus async retry).
 
 ### 4.3 Impact Analysis (Click a Node)
 
@@ -206,25 +210,59 @@ Switch to "Batch Import Files" in the "New Analysis" dialog:
 - The zip is decompressed in the browser via fflate; all `.sql` files are extracted
 - Each file produces an **independent script** (its own `analysis_id`, individually deletable/renamable)
 - A partial failure of one file doesn't block others; failures are shown in the toast
+- **Optional batch tagging:** if tag dimensions are defined (see 4.5), a "Tag (optional)" button appears. Picking tags applies the **same tag set to every file** in this batch — useful when a batch of ETL scripts all belong to the same layer / business line
 
-### 4.5 Preprocess Rules
+### 4.5 Tag Filtering & Script Grouping
+
+Tag scripts with **flat multi-dimension labels** (e.g. `[C-layer, retail-loans]`), then filter the global graph to show only the tagged scripts' lineage. This is the natural fit for layered warehouses (O/C/D layers) and business-line-organized ETL.
+
+**Data model — flat tags, dimensions external:**
+
+- Each script stores a flat `tags: string[]` array (e.g. `["C层", "个人借据"]`), with **no dimension structure baked in**
+- Dimension definitions live in `tag_schema.json` (`{dimensions: [{name, values}]}`), maintained by admins via the **"Tag Dimensions"** button in the header
+- Dimension names are **not hardcoded** — ship with `dimensions: []` (empty), admins fill in actual dimension names and tag values after deployment. Adding/removing a dimension never touches script data; orphaned tags just stop appearing in the filter
+
+**Three ways to tag:**
+
+1. **Per-script** — each list item shows its tags (purple) + a tag icon button; clicking opens a popover to pick tags grouped by dimension
+2. **Batch mode** — click "Batch" in the list header, checkbox-select scripts, then "Tag" to apply one set of tags to all selected
+3. **At upload** — optional batch tagging in the Batch Import panel (see 4.4)
+
+**Filter semantics (Excel-style, dimension-internal OR × cross-dimension AND):**
+
+The filter is a multi-select dropdown at the top of the script list, with checkbox options grouped by dimension. Selecting tags filters as:
+
+- **Within a dimension:** OR — a script matches if it has *any* of the dimension's selected tags (e.g. `retail-loans OR credit-cards`)
+- **Across dimensions:** AND — a script must satisfy *all* dimensions that have selections (e.g. must be `C-layer` AND `retail-loans-or-credit-cards`)
+
+This mirrors Excel's column-filter behavior and matches the intuition "I want C-layer scripts in the retail-loans business line."
+
+**Canvas effect (edge-driven):**
+
+- Only the **global graph view** applies tag filtering; switching to a single script ignores the filter (the filter dims but doesn't clear)
+- The canvas keeps only edges whose `script_id` is in the hit set, then derives nodes from those edges' endpoints (same logic as the global graph builder) — isolated tables not touched by any hit edge are not shown
+- Non-hit scripts in the list are **dimmed (not hidden)** so you can see they exist
+
+> **Typical flow:** admin defines dimensions ("Data Layer", "Business Line") in Tag Dimensions → users tag scripts (batch-tag at upload is fastest) → in the global view, pick tags in the filter dropdown → canvas narrows to that slice's lineage. Re-tagging or removing a dimension is non-destructive.
+
+### 4.6 Preprocess Rules
 
 See [Section 6](#6-preprocess-rules).
 
-### 4.6 Import / Export
+### 4.7 Import / Export
 
 | Action | Description |
 |--------|-------------|
-| Export | One-click export of all data (tables + edges + scripts + preprocess_rules) as a JSON file |
-| Import | Overwrite all current data with an exported JSON (clears existing data; confirmation required) |
+| Export | One-click export of all data (tables + edges + scripts + preprocess_rules + tag_schema) as a JSON file |
+| Import | Overwrite all current data with an exported JSON (clears existing data; confirmation required). Older exports without `tag_schema` default to an empty schema |
 
-### 4.7 Graph Export
+### 4.8 Graph Export
 
 Export the current graph via the top-right buttons:
 - **PNG**: screenshot of the current canvas (excludes controls/minimap)
 - **HTML**: generate a standalone openable HTML file with the graph data embedded
 
-### 4.8 Supported SQL Types
+### 4.9 Supported SQL Types
 
 | Type | Example | Handling |
 |------|---------|----------|
@@ -345,16 +383,18 @@ All endpoints are prefixed with `/api`. Swagger UI: `http://localhost:8000/docs`
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/analyze` | POST | Submit a script for analysis (`database_config` optional; None = offline mode) |
-| `/analyze-batch` | POST | Batch-analyze multiple files (each produces an independent script) |
+| `/analyze-batch` | POST | Batch-analyze multiple files (each produces an independent script). Optional `tags` applies the same tag set to every file |
 | `/impact-analysis/{table}` | GET | Impact analysis (upstream/downstream/paths/cycles) |
 
 ### Script Management
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/scripts` | GET | Script list |
+| `/scripts` | GET | Script list (includes `tags`) |
 | `/scripts/{id}` | GET / DELETE | Script detail / delete |
 | `/scripts/{id}/name` | PUT | Rename |
+| `/scripts/{id}/tags` | PUT | Set a script's tags (full replacement; `tags: string[]`) |
+| `/scripts/batch-tags` | POST | Batch-set the same tags on multiple scripts (`{script_ids, tags}`) |
 | `/scripts/{id}/statements` | GET | Statement segments |
 | `/scripts/{id}/statements/{seq}` | PUT | Correct a statement's parse result |
 
@@ -364,9 +404,10 @@ All endpoints are prefixed with `/api`. Swagger UI: `http://localhost:8000/docs`
 |----------|--------|-------------|
 | `/global-graph` | GET | Global graph (with column_mappings) |
 | `/tables` | GET | Global table registry |
+| `/tag-schema` | GET / PUT | Tag dimension definitions (`{dimensions: [{name, values}]}`); empty by default, admin-maintained |
 | `/preprocess-rules` | GET / PUT | Preprocess rules (regex replacement rules; param mapping is a built-in type) |
 | `/param-mapping` | GET / PUT | *(legacy, backward-compat alias of /preprocess-rules)* |
-| `/export` | GET | Export all data |
+| `/export` | GET | Export all data (includes `tag_schema`) |
 | `/import` | POST | Import data (overwrites) |
 | `/health` | GET | Health check |
 
@@ -381,9 +422,10 @@ backend/data/
 ├── tables.json          # Global table registry (schema.table as key, with script_ids reverse index)
 ├── edges.jsonl          # Global lineage edges (JSON Lines, append-only, with column_mappings)
 ├── preprocess_rules.json # Preprocess rules (regex replacement; param mapping is a built-in type)
+├── tag_schema.json      # Tag dimension definitions ({dimensions: [{name, values}]}); empty by default
 ├── store.lock           # File lock
 └── scripts/
-    └── {id}.json        # Each script's analysis result
+    └── {id}.json        # Each script's analysis result (includes flat `tags: string[]`)
 ```
 
 ### Concurrency & Consistency
@@ -397,9 +439,11 @@ backend/data/
 
 ### Backward Compatibility
 
-The `column_mappings` field of `VisEdge` / `GlobalEdge` uses `Field(default_factory=list)`, so old data (without this field) deserializes to an empty array without errors.
+The `column_mappings` field of `VisEdge` / `GlobalEdge` uses `Field(default_factory=list)`, so old data (without this field) deserializes to an empty array without errors. The `tags` field of `AnalysisResult` / `ScriptSummary` works the same way — old scripts (without `tags`) load as an empty array.
 
 **Param mapping auto-migration**: on first startup, if a legacy `param_mapping.json` is detected, it is automatically converted into builtin rules in `preprocess_rules.json` (each `{param: value}` becomes a rule with `id=param-{name}`, `pattern=\$\{name\}`, `builtin=true`). The old file is no longer used after migration. Importing a legacy export JSON (with `param_mapping` field but no `preprocess_rules`) also auto-converts.
+
+**Tag schema**: the `tag_schema.json` is created empty on first access. Importing a legacy export JSON (without `tag_schema` field) writes an empty schema. Removing a dimension is non-destructive — orphaned tag values on scripts are simply ignored by the filter (no longer appear since no dimension claims them); they can be cleaned up by re-saving tags on affected scripts.
 
 ---
 
