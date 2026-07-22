@@ -75,9 +75,9 @@
 
 > 适合：内网隔离环境、不想折腾 Python/Node 环境的用户。
 
-1. 到 [Releases](../../releases/latest) 页面下载 `LineagePuzzle-v2.0.0-portable.zip`（约 94MB）
+1. 到 [Releases](../../releases/latest) 页面下载 `LineagePuzzle-v2.0.0-portable.zip`（约 44MB）
 2. 解压到任意目录（路径避免中文和空格）
-3. 双击 `run.bat` —— uvicorn **后台启动**（不保留终端窗口），浏览器自动打开 **http://localhost:8000**
+3. 双击 `run.bat` —— uvicorn **后台启动**（不保留终端窗口），浏览器自动打开 `http://localhost:8000`
 4. 停止服务双击 `stop.bat`
 
 **就这样。** 目标机不需要安装 Python、Node、Docker，也不需要联网。便携包自带 Python 3.13 运行时和全部依赖。把整个文件夹拷进 U 盘，到哪台内网机器都能跑。
@@ -102,7 +102,7 @@ cd ../frontend && npm install
 cd .. && ./ctl.sh start
 ```
 
-打开 **http://localhost:5173** ，点右上角「新建分析」，粘贴一段 SQL：
+打开 `http://localhost:5173` ，点右上角「新建分析」，粘贴一段 SQL：
 
 ```sql
 CREATE TEMP TABLE tmp_detail AS
@@ -121,7 +121,7 @@ cd frontend && npm run build        # 构建前端到 dist/
 cd ../backend && uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-打开 **http://localhost:8000**（单进程同时服务页面 + API）。
+打开 `http://localhost:8000`（单进程同时服务页面 + API）。
 
 > **不需要数据库**。血缘提取纯靠 SQL 语法解析，数据库仅用于可选的表存在性校验。
 

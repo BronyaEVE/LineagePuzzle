@@ -74,9 +74,9 @@ Two paths depending on your environment:
 
 > Best for: air-gapped environments, users who don't want to fiddle with Python/Node.
 
-1. Download `LineagePuzzle-v2.0.0-portable.zip` (~33 MB) from the [Releases](../../releases/latest) page
+1. Download `LineagePuzzle-v2.0.0-portable.zip` (~44 MB) from the [Releases](../../releases/latest) page
 2. Extract to any folder (avoid Chinese characters and spaces in the path)
-3. Double-click `run.bat` — uvicorn starts in the **background** (no console window stays open) and your browser opens automatically to **http://localhost:8000**
+3. Double-click `run.bat` — uvicorn starts in the **background** (no console window stays open) and your browser opens automatically to `http://localhost:8000`
 4. To stop the service, double-click `stop.bat`
 
 **That's it.** The target machine needs no Python, Node, or Docker, and no internet. The portable package bundles Python 3.13 runtime and all dependencies. Copy the whole folder to a USB stick and run it on any intranet machine.
@@ -101,7 +101,7 @@ cd ../frontend && npm install
 cd .. && ./ctl.sh start
 ```
 
-Open **http://localhost:5173**, click "New Analysis" in the top-right, and paste some SQL:
+Open `http://localhost:5173`, click "New Analysis" in the top-right, and paste some SQL:
 
 ```sql
 CREATE TEMP TABLE tmp_detail AS
@@ -120,7 +120,7 @@ cd frontend && npm run build        # build frontend into dist/
 cd ../backend && uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Open **http://localhost:8000** (single process serving both the page and the API).
+Open `http://localhost:8000` (single process serving both the page and the API).
 
 > **No database required.** Lineage extraction relies purely on SQL syntax parsing; the database is only for optional table-existence validation.
 

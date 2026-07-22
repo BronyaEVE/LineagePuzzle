@@ -496,7 +496,7 @@ docker exec -i lineage-pg psql -U postgres < backend/tests/init_test_tables.sql
 **Developers** (build the latest locally): use `pack_portable.bat` (must run on a dev machine **with internet** — it downloads embedded Python and installs deps):
 
 ```bash
-pack_portable.bat    # produces dist-portable/ (~94 MB)
+pack_portable.bat    # produces dist-portable/ (~86 MB) + zip (~44 MB)
 ```
 
 Copy the entire `dist-portable/` folder to the target machine, double-click `run.bat`. uvicorn starts in the background (no console window) and the browser opens automatically to `http://localhost:8000`. To stop, double-click `stop.bat`.
