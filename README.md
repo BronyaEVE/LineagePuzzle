@@ -3,61 +3,65 @@
 [![zread](https://img.shields.io/badge/Ask_Zread-_.svg?style=flat&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff)](https://zread.ai/BronyaEVE/LineagePuzzle)
 [![Built with GLM-5.2](https://img.shields.io/badge/Built_with-GLM--5.2-3858F6?style=flat)](https://z.ai)
 
-**English** | [简体中文](./README.zh-CN.md)
+**简体中文** | [English](./README.en.md)
 
-> A zero-dependency SQL data lineage visualization tool for air-gapped / on-premise environments — paste DML scripts, auto-generate table-level + column-level lineage graphs, and reconstruct the full data flow of your warehouse piece by piece.
+> 内网环境下零依赖的 SQL 数据血缘可视化工具 —— 粘贴 DML 脚本，自动生成表级 + 列级血缘图谱，像拼图一样逐步还原整个数仓的数据流转。
 
-![Global Lineage Graph](docs/images/hero.png)
-
----
-
-## 🎯 Why This Project
-
-Modern data platforms (Dataphin, WhaleOps, cloud DataWorks, etc.) and databases ship with built-in lineage analysis — but they all assume you have a **complete, connected, freshly-built big-data platform**. In reality, many teams are stuck with:
-
-- **Legacy schedulers** — still running Control-M, Kettle, or in-house schedulers that only execute scripts and never record "where does this table's data actually come from?"
-- **Piles of SQL scripts** — hundreds of warehouse ETL scripts where changing one table has unknown blast radius; whoever inherits the project reads SQL for three days to trace a single lineage path
-- **Weak built-in lineage** — PostgreSQL's dependency views are table-level only, don't cover the full ETL chain, and have no visualization
-- **Air-gapped networks** — heavy lineage platforms like Airflow / DataHub / OpenLineage need Kafka, K8s, a metadata DB — none of which can land in an isolated environment
-
-**LineagePuzzle exists for this scenario**: a pocket-sized tool that fits on a USB stick and runs on double-click. It extracts lineage purely from SQL syntax analysis, needs no big-data platform, and works without a database connection. It brings the "standard-issue" lineage capability of advanced platforms to any intranet, in the lightest possible way.
-
-## 👥 Who Is It For
-
-- **Developers inheriting legacy projects** — facing undocumented ETL scripts, want to quickly figure out where data comes from, where it goes, and who is affected by changing a table
-- **Air-gapped / isolated-network teams** — can't install heavy lineage platforms, need a zero-dependency, offline-capable lightweight solution
-- **Warehouse developers / data governance** — want to incrementally map lineage at script granularity rather than bulk-importing an entire data dictionary
+![全局血缘图谱](docs/images/hero.png)
 
 ---
 
-## ✨ Key Features
+## 🎯 为什么做这个项目
 
-- **Incremental build** — analyze one script at a time, lineage auto-accumulates into a global graph; no need to submit all scripts at once
-- **Offline-first** — static AST parsing via `sqlglot`, **no database connection required** to extract full lineage
-- **Table-level + Column-level** — not just table flow, click an edge to see `target column ← source columns` and transform expressions (`SUM(amount)`, `price*qty`)
-- **Impact analysis** — click a node to highlight all upstream (cyan) and downstream (orange) paths; diamond dependencies fully covered
-- **Node collapse** — in complex graphs, click a node's +/- button to collapse/expand upstream or downstream chains, focus on local structure
-- **Tag filtering** — tag scripts with flat multi-dimension labels (e.g. `[C-layer, retail-loans]`); filter the global graph to show only tagged scripts' lineage, like Excel autofilter
-- **Parameterized SQL** — supports ETL template placeholders like `${icl_schema}`, replaced via Preprocess Rules (param mapping is a built-in rule type)
-- **Batch import** — drag in multiple `.sql` files or a `.zip` archive; each file becomes an independent script
-- **Zero-install deployment** — portable edition bundles the Python runtime; just double-click on the target machine
+现代化的数据平台（Dataphin、WhaleOps、云厂商 DataWorks 等）和数据库本身都自带血缘分析，但它们大多假设你有一个**完整的、联网的、新建的大数据平台**。现实里很多团队的处境是：
 
-### Screenshots
+- **调度工具老旧**：还在用 Control-M、Kettle 或自研调度，调度器只管跑脚本，从不记录"这张表的数据到底从哪来"
+- **SQL 脚本堆积如山**：数仓里成百上千个 ETL 脚本，改一个表不知道会炸到哪里，接手老项目的人对着 SQL 查三天才能理清一条链路
+- **数据库自带血缘不够用**：PostgreSQL 的依赖视图只到表级、不覆盖 ETL 全链路，且无法可视化
+- **内网隔离，重型平台装不进来**：Airflow/DataHub/OpenLineage 这类方案要 Kafka、要 K8s、要元数据库，内网环境根本没法落地
+
+**LineagePuzzle 就是为了这个场景而生的**：一个能装在 U 盘里、双击就跑的小工具，纯靠 SQL 语法分析提取血缘，不依赖任何大数据平台、不连数据库也能工作。把那些被先进平台"当作标配"的血缘分析能力，以最轻量的方式带到任何内网环境。
+
+## 👥 适合谁
+
+- **接手老项目的开发者** —— 面对一堆没文档的 ETL 脚本，想快速搞清数据从哪来、到哪去、改一张表影响谁
+- **内网 / 隔离环境团队** —— 装不了重型血缘平台，需要零依赖、能离线运行的轻量方案
+- **数仓开发 / 数据治理** —— 想要增量地、脚本粒度地梳理血缘，而不是一次性导入整个数据字典
+
+---
+
+
+## ✨ 核心特性
+
+- **增量构建** —— 每次分析一个脚本，血缘自动累积到全局图谱，无需一次性提交所有脚本
+- **离线优先** —— 基于 `sqlglot` AST 静态解析，**无需数据库连接** 即可提取完整血缘
+- **表级 + 列级** —— 不仅看表间流转，还能点边查看 `目标列 ← 源列` 及变换表达式（`SUM(amount)`、`price*qty`）
+- **影响分析** —— 点击节点，高亮其全部上游链路（青色）和下游链路（橙色），菱形依赖完整覆盖
+- **节点折叠** —— 复杂图谱里点节点边缘的 +/- 按钮折叠/展开上游或下游链路，专注看局部
+- **标签筛选** —— 给脚本打扁平多维度标签（如 `[C层, 个人借据]`），全局画布按标签筛选只显示命中脚本贡献的血缘，类似 Excel 筛选
+- **参数化 SQL** —— 支持 ETL 模板占位符 `${icl_schema}`，配合「预处理规则」替换成实际 schema（参数映射为内置规则特例）
+- **批量导入** —— 一次拖入多个 `.sql` 文件或 `.zip` 压缩包，每个文件成为独立脚本
+- **零安装部署** —— 便携版自带 Python 运行时，目标机双击即用
+
+### 截图预览
 
 <details>
-<summary>📸 Click to expand</summary>
+<summary>📸 点击展开</summary>
 
 | | |
 |:---:|:---:|
-| **Global Lineage Graph** | **Column-level Lineage Drawer** |
-| ![Global Graph](docs/images/hero.png) | ![Column Drawer](docs/images/column-drawer.png) |
-| Click an edge to see `target column ← source columns` + transform expressions | |
-| **Impact Analysis** | **Node Collapse** |
-| ![Impact Analysis](docs/images/impact-analysis.png) | ![Node Collapse](docs/images/node-collapse.png) |
-| Click a node: cyan = upstream, orange = downstream | Collapse upstream/downstream chains with +/- buttons |
-| **Preprocess Rules** | |
-| ![Preprocess Rules](docs/images/preprocess-rules.png) | |
-| Regex replacement rules; param mapping is a built-in type | |
+| **全局血缘图谱** | **列级血缘映射** |
+| ![全局图谱](docs/images/hero.png) | ![列级映射](docs/images/column-drawer.png) |
+| 全局视图聚合所有脚本，分层血缘流向 | 点边查看 `目标列 ← 源列` 及变换表达式 |
+| **影响分析** | **节点折叠** |
+| ![影响分析](docs/images/impact-analysis.png) | ![节点折叠](docs/images/node-collapse.png) |
+| 点节点：青色 = 上游链路，橙色 = 下游链路 | +/- 按钮折叠/展开上下游链路 |
+| **标签筛选** | **搜索（表名=影响分析）** |
+| ![标签筛选](docs/images/tag-filter.png) | ![搜索](docs/images/search.png) |
+| 按维度筛选命中脚本的血缘切片 | 搜表名触发上下游双色高亮 |
+| **标签维度定义** | **预处理规则** |
+| ![标签维度](docs/images/tag-schema.png) | ![预处理规则](docs/images/preprocess-rules.png) |
+| 管理员维护维度名 + 标签值 | 正则替换规则；参数映射为内置类型 |
 
 </details>
 
@@ -65,40 +69,40 @@ Modern data platforms (Dataphin, WhaleOps, cloud DataWorks, etc.) and databases 
 
 ## 🚀 Quick Start
 
-Two paths depending on your environment:
+提供两条路径，按你的环境选：
 
-### Option A: Download the Portable Package (air-gapped / general users, zero install)
+### 方式 A：下载便携包（内网 / 普通用户，零安装）
 
-> Best for: air-gapped environments, users who don't want to fiddle with Python/Node.
+> 适合：内网隔离环境、不想折腾 Python/Node 环境的用户。
 
-1. Download `LineagePuzzle-v2.0.0-portable.zip` (~33 MB) from the [Releases](../../releases/latest) page
-2. Extract to any folder (avoid Chinese characters and spaces in the path)
-3. Double-click `run.bat` — uvicorn starts in the **background** (no console window stays open) and your browser opens automatically to **http://localhost:8000**
-4. To stop the service, double-click `stop.bat`
+1. 到 [Releases](../../releases/latest) 页面下载 `LineagePuzzle-v2.0.0-portable.zip`（约 94MB）
+2. 解压到任意目录（路径避免中文和空格）
+3. 双击 `run.bat` —— uvicorn **后台启动**（不保留终端窗口），浏览器自动打开 **http://localhost:8000**
+4. 停止服务双击 `stop.bat`
 
-**That's it.** The target machine needs no Python, Node, or Docker, and no internet. The portable package bundles Python 3.13 runtime and all dependencies. Copy the whole folder to a USB stick and run it on any intranet machine.
+**就这样。** 目标机不需要安装 Python、Node、Docker，也不需要联网。便携包自带 Python 3.13 运行时和全部依赖。把整个文件夹拷进 U 盘，到哪台内网机器都能跑。
 
-> **Run/Stop mechanism:** `run.bat` is a thin wrapper that invokes `launcher.pyw` via the bundled `pythonw.exe` (the windowless Python variant). The launcher manages the uvicorn subprocess lifecycle: it writes the PID to `logs/lineage.pid`, redirects uvicorn output to `logs/lineage.log`, and itself logs to `logs/launcher.log`. Running `run.bat` again while the service is up just reopens the browser (no duplicate launch). `stop.bat` stops by PID file first, falling back to looking up the listener on port 8000 (so it still works after a hard shutdown that left the PID file stale).
+> **启动/停止机制：** `run.bat` 是薄壳，通过自带的 `pythonw.exe`（无窗口版 Python）调用 `launcher.pyw`。启动器管理 uvicorn 子进程生命周期：PID 写入 `logs/lineage.pid`，uvicorn 输出重定向到 `logs/lineage.log`，启动器自身日志在 `logs/launcher.log`。服务运行中再双击 `run.bat` 只会重新打开浏览器（不会重复启动）。`stop.bat` 优先按 PID 文件停止，PID 文件失效时（比如硬关电脑后）按端口 8000 查监听进程兜底。
 
-> Want colleagues to access it? The service listens on `0.0.0.0:8000` by default, so coworkers can reach it at `http://your-ip:8000`. Copy the `app/data/` folder to them and they'll see the same global graph.
+> 让同事访问？服务默认监听 `0.0.0.0:8000`，同事用 `http://你的IP:8000` 即可访问。拷贝 `app/data/` 给他，他启动后能看到相同的全局图谱。
 
-### Option B: Build from Source (developers)
+### 方式 B：从源码构建（开发者）
 
-> Best for: developers who want to read/modify code or contribute PRs. Requires internet.
+> 适合：想阅读/修改代码、贡献 PR 的开发者。需要联网环境。
 
 ```bash
 git clone https://github.com/BronyaEVE/LineagePuzzle.git
 cd LineagePuzzle
 
-# Install dependencies
+# 安装依赖
 cd backend && pip install -r requirements.txt
 cd ../frontend && npm install
 
-# Start (backend :8000 + frontend dev :5173)
+# 启动（后端 :8000 + 前端 dev :5173）
 cd .. && ./ctl.sh start
 ```
 
-Open **http://localhost:5173**, click "New Analysis" in the top-right, and paste some SQL:
+打开 **http://localhost:5173** ，点右上角「新建分析」，粘贴一段 SQL：
 
 ```sql
 CREATE TEMP TABLE tmp_detail AS
@@ -108,128 +112,131 @@ INSERT INTO order_report (order_id, amount, customer_name)
 SELECT id, amount * 1.1, name FROM tmp_detail;
 ```
 
-Click "Analyze Lineage" — you'll see the chain `orders`, `customers` (green) → `tmp_detail` (yellow) → `order_report` (blue). Click any edge to see the column-level mapping on the right.
+点「分析血缘」—— 你会看到 `orders`、`customers`（绿）→ `tmp_detail`（黄）→ `order_report`（蓝）的血缘链路。再点任意一条边，右侧弹出列级映射。
 
-**All-in-one deployment** (production, single port):
+**一体化部署**（生产，单端口）：
 
 ```bash
-cd frontend && npm run build        # build frontend into dist/
+cd frontend && npm run build        # 构建前端到 dist/
 cd ../backend && uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Open **http://localhost:8000** (single process serving both the page and the API).
+打开 **http://localhost:8000**（单进程同时服务页面 + API）。
 
-> **No database required.** Lineage extraction relies purely on SQL syntax parsing; the database is only for optional table-existence validation.
-
----
-
-## 🧩 Two Analysis Modes
-
-| Mode | Use case | Description |
-|------|----------|-------------|
-| **Offline mode** (default) | No database | Pure AST parsing, just paste SQL; shows "Analysis complete (offline mode)" |
-| **Online mode** | Has PostgreSQL | Expand "Advanced options" to fill in connection info; additionally validates table existence and enriches column info |
+> **不需要数据库**。血缘提取纯靠 SQL 语法解析，数据库仅用于可选的表存在性校验。
 
 ---
 
-## 📖 Feature Overview
+## 🧩 两种分析模式
 
-### Column-level lineage (click an edge)
+| 模式 | 适用 | 说明 |
+|------|------|------|
+| **离线模式**（默认） | 无数据库环境 | 纯 AST 解析，粘贴 SQL 即可，提示「分析完成（离线模式）」 |
+| **在线模式** | 有 PostgreSQL | 展开「高级选项」填连接信息，额外校验表是否存在、补充列信息 |
 
-Click any edge in the graph to open a drawer showing that edge's column mappings:
+---
+
+## 📖 功能一览
+
+### 列级血缘（点边查看）
+
+点击图中任意一条边，右侧 Drawer 展示该边的列级映射：
 
 ```
-public.orders → public.order_report   Operation: INSERT   Statement #1
+public.orders → public.order_report   操作：INSERT   语句 #1
 
 [order_id]      ← [public.orders.id]
-[amount]        ← [public.orders.amount]      Transform: amount * 1.1
+[amount]        ← [public.orders.amount]      变换：amount * 1.1
 [customer_name] ← [public.customers.name]
 ```
 
-Supports: explicit column mapping, JOIN + aliases, aggregates (`SUM`/`COUNT`), expressions (`price*qty`), CTAS, UPDATE SET, and **derived-table passthrough** (subquery columns traced back to physical tables). `SELECT *` degrades to table-level (edges still generated).
+![列级血缘 Drawer](docs/images/column-drawer.png)
 
-### Impact analysis (click a node)
+支持：显式列映射、JOIN+别名、聚合（`SUM`/`COUNT`）、表达式（`price*qty`）、CTAS、UPDATE SET、**派生表穿透**（子查询列追溯到物理表）。`SELECT *` 因无表结构降级为表级（边仍正常生成）。
 
-Click a node to highlight **all** upstream/downstream paths (via `all_simple_paths`; diamond dependencies like `A→B→C` and `A→C` light up all three edges):
+### 影响分析（点节点高亮链路）
 
-- 🔵 Downstream (who's affected if this table changes) — orange highlight
-- 🔼 Upstream (where this table's data comes from) — cyan highlight
+点击节点，高亮其**全部**上下游链路（基于 `all_simple_paths`，菱形依赖 `A→B→C` 且 `A→C` 时三条边全亮）：
 
-### Batch import
+- 🔵 下游（改这张表会影响谁）—— 橙色高亮
+- 🔼 上游（这张表的数据来自谁）—— 青色高亮
 
-Switch to the "Batch Import" tab in the "New Analysis" dialog, drag in multiple `.sql` files or a `.zip` containing multiple `.sql` files; each file becomes an independent script.
+### 批量导入
 
-### Others
+「新建分析」弹窗切换到「批量导入文件」标签，拖入多个 `.sql` 或一个 `.zip`（含多个 `.sql`），每个文件成为独立脚本。
 
-- **Search box**: fuzzy-match table/column names. Searching a table name triggers impact analysis (same as clicking the node); searching a column highlights all edges that column flows through. Selecting the same target repeatedly always re-focuses
-- **Preprocess Rules**: configure regex replacement rules (name/pattern/replacement/enabled) to handle weird SQL formats; param mapping is a built-in rule type (id prefixed `param-`), auto-applied during analysis
-- **Import/Export**: one-click backup/migration of all lineage data (JSON)
-- **Graph export**: export the current graph as PNG / standalone HTML
+### 其他
 
-> Full feature docs, architecture, and API reference in **[docs/PROJECT.md](docs/PROJECT.md)**.
+- **搜索框**：模糊匹配表名/字段名。搜表名触发影响分析（与点节点同效果）；搜字段高亮该字段流转经过的所有边。重复搜同一目标也会重新聚焦
+- **预处理规则**：配置正则替换规则（name/pattern/replacement/enabled），应对各种奇怪 SQL 格式；参数映射为内置规则特例（id 以 `param-` 前缀），分析时自动应用
+- **导入/导出**：一键备份/迁移全部血缘数据（JSON）
+- **图导出**：导出当前图谱为 PNG / 独立 HTML
 
----
-
-## 🏗️ Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| Frontend | React 19 + TypeScript + antd v6 + React Flow (@xyflow/react v12) |
-| Backend | Python FastAPI + Pydantic |
-| SQL parsing | sqlglot (static AST analysis, sole lineage source) |
-| Graph algorithms | networkx (shortest/all paths, cycle detection for impact analysis) |
-| Storage | JSON / JSONL + filelock (no database dependency) |
-| Deployment | Python embeddable (portable edition, zero install) |
+> 完整功能说明、架构设计、API 文档见 **[docs/PROJECT.md](docs/PROJECT.md)**。
 
 ---
 
-## 📂 Project Structure
+## 🏗️ 技术栈
+
+| 层 | 技术 |
+|----|------|
+| 前端 | React 19 + TypeScript + antd v6 + React Flow (@xyflow/react v12) |
+| 后端 | Python FastAPI + Pydantic |
+| SQL 解析 | sqlglot（AST 静态解析，唯一血缘来源） |
+| 图算法 | networkx（影响分析的最短/全路径、环检测） |
+| 存储 | JSON / JSONL + filelock（无数据库依赖） |
+| 部署 | Python embeddable（便携版零安装） |
+
+---
+
+## 📂 项目结构
 
 ```
-LineagePuzzle/
+datalineage_visualizer/
 ├── backend/
 │   ├── app/
-│   │   ├── api/           # FastAPI routes (21 REST endpoints)
-│   │   ├── services/      # lineage extraction, storage, preprocess rules (core logic)
-│   │   ├── models/        # Pydantic data models
-│   │   └── main.py        # FastAPI app + static file hosting
-│   ├── tests/             # 292 tests (93% coverage)
-│   └── requirements.txt   # 9 core dependencies
+│   │   ├── api/           # FastAPI 路由（21 个 REST 端点）
+│   │   ├── services/      # 血缘提取、存储、预处理规则（核心逻辑）
+│   │   ├── models/        # Pydantic 数据模型
+│   │   └── main.py        # FastAPI 应用 + 静态文件托管
+│   ├── tests/             # 292 个测试（覆盖率 93%）
+│   └── requirements.txt   # 9 个核心依赖
 ├── frontend/
 │   └── src/
-│       ├── components/    # lineage graph, search box, batch import, etc.
-│       ├── api/           # REST client
-│       └── types/         # TypeScript type definitions
+│       ├── components/    # 血缘图、搜索框、批量导入等组件
+│       ├── api/           # REST 客户端
+│       └── types/         # TypeScript 类型定义
 ├── docs/
-│   ├── PROJECT.md         # detailed project docs (architecture/API/advanced usage)
-│   └── images/            # screenshots
-├── ctl.sh                 # one-click start/stop script
-└── pack_portable.bat      # portable edition build script
+│   ├── PROJECT.md         # 详细项目文档（架构/API/深度用法，中文）
+│   ├── PROJECT.en.md      # 详细项目文档（英文）
+│   └── images/            # 截图
+├── ctl.sh                 # 一键启停脚本
+└── pack_portable.bat      # 便携版打包脚本
 ```
 
 ---
 
-## 📊 Testing
+## 📊 测试
 
 ```bash
-cd backend && python -m pytest    # 292 passed, 93% coverage
+cd backend && python -m pytest    # 292 passed, 覆盖率 93%
 ```
 
-Test files (11 files, covering all layers):
+测试文件（11 个文件，覆盖全部层）：
 
-| File | Tests | Covers |
-|------|-------|--------|
-| `test_preprocessor` | 33 | Comment stripping, DO block extraction, transaction semicolons, preprocess rules |
-| `test_param_mapping` | 30 | Param replacement, preprocess rule CRUD, auto-migration |
-| `test_splitter` | 28 | Statement splitting, type detection, transaction blocks |
-| `test_api` | 55 | All 21 REST endpoints (e2e via TestClient), tag endpoints, batch with tags |
-| `test_store` | 51 | Persistence, impact analysis, export/import, path traversal guard, tag schema + tagging |
-| `test_lineage_e2e` | 15 | End-to-end lineage: CASE WHEN, DO block, cross-schema, transactions |
-| `test_lineage_extractor` | 18 | Table-level lineage extraction, multi-source JOIN, temp table chains |
-| `test_column_lineage` | 18 | Column-level mapping, subquery passthrough, UPDATE lineage |
-| `test_normalize` | 15 | Table name normalization, case folding (PostgreSQL semantics) |
-| `test_impact_analysis` | 14 | all_simple_paths, diamond dependencies, path explosion guards |
-| `test_analyzer` | 4 | Offline mode, DB degradation |
+| 文件 | 测试数 | 覆盖范围 |
+|------|--------|---------|
+| `test_preprocessor` | 33 | 去注释、DO block 提取、事务补分号、预处理规则 |
+| `test_param_mapping` | 30 | 参数替换、预处理规则 CRUD、自动迁移 |
+| `test_splitter` | 28 | 语句拆分、类型检测、事务块 |
+| `test_api` | 55 | 全部 21 个 REST 端点（TestClient 端到端）、标签端点、批量带标签 |
+| `test_store` | 51 | 持久化、影响分析、导入导出、路径遍历防护、标签维度+打标 |
+| `test_lineage_e2e` | 15 | 端到端血缘：CASE WHEN、DO block、跨 schema、事务 |
+| `test_lineage_extractor` | 18 | 表级血缘提取、多源 JOIN、临时表链路 |
+| `test_column_lineage` | 18 | 列级映射、子查询穿透、UPDATE 血缘 |
+| `test_normalize` | 15 | 表名归一化、大小写折叠（PostgreSQL 语义） |
+| `test_impact_analysis` | 14 | all_simple_paths、菱形依赖、路径爆炸防护 |
+| `test_analyzer` | 4 | 离线模式、DB 降级 |
 
 ---
 
