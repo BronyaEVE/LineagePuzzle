@@ -525,7 +525,7 @@ docker exec -i lineage-pg psql -U postgres < backend/tests/init_test_tables.sql
 **开发者**（需要在本地构建最新版）：用 `pack_portable.bat`（必须在**有网**的开发机执行，会从镜像下载嵌入式 Python + 装依赖）：
 
 ```bash
-pack_portable.bat    # 产出 dist-portable/（约 94MB）
+pack_portable.bat    # 产出 dist-portable/（约 86MB）+ zip（约 44MB）
 ```
 
 将 `dist-portable/` 整个文件夹拷贝到目标机器，双击 `run.bat`。uvicorn 后台启动（无控制台窗口），浏览器自动打开 `http://localhost:8000`。停止服务双击 `stop.bat`。
