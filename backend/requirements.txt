@@ -14,3 +14,6 @@ pydantic==2.12.5
 pydantic-settings==2.14.0
 filelock==3.29.4
 networkx==3.6.1
+# 桌面版（PyWebView 窗口模式）依赖：desktop.py 用它开原生窗口加载本地页面。
+# 仅桌面版需要，便携包（浏览器访问）模式不需要。
+pywebview==6.2.1

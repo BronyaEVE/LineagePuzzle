@@ -24,7 +24,10 @@ from filelock import FileLock
 from ..models.analysis import AnalysisResult, GlobalEdge, GlobalGraph, ScriptSummary, VisNode
 from .normalize import normalize_table_name
 
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+DATA_DIR = Path(
+    os.environ.get("LINEAGE_DATA_DIR")
+    or (Path(__file__).resolve().parent.parent.parent / "data")
+)
 TABLES_FILE = DATA_DIR / "tables.json"
 EDGES_FILE = DATA_DIR / "edges.jsonl"  # JSON Lines 格式
 SCRIPTS_DIR = DATA_DIR / "scripts"
