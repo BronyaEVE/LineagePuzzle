@@ -69,11 +69,26 @@
 
 ## 🚀 快速开始
 
-提供两条路径，按你的环境选：
+提供三种形态，按你的环境选：
 
-### 方式 A：下载便携包（内网 / 普通用户，零安装）
+### 方式 A：下载桌面版（推荐，普通用户）
 
-> 适合：内网隔离环境、不想折腾 Python/Node 环境的用户。
+> 适合：想要「双击即用、关窗即退」的原生桌面体验，不想理解前后端、不想留后台进程。
+
+1. 到 [Releases](../../releases/latest) 页面下载 `LineagePuzzle-Desktop-v2.1.0-portable.zip`（约 88MB）
+2. 解压到任意目录（路径避免中文和空格）
+3. 双击 `LineagePuzzle.exe` —— 弹出**原生桌面窗口**（不是浏览器），自动加载界面
+4. 用完直接**关窗口**，程序彻底退出，无残留进程
+
+**就这样。** 目标机不需要安装 Python、Node、浏览器，也不需要联网。桌面版用 PyWebView 把界面包进原生窗口（Windows 10 1803+/11 自带的 WebView2 内核），uvicorn 作为 daemon 线程跑在主进程内 —— **关窗 = 主进程退出 = 服务线程终止**，从架构上根除了「关浏览器后 uvicorn 后台残留」的痛点。
+
+> **体积权衡：** 桌面版 ~88MB（zip）/ ~192MB（解压），比便携包大，因为打包了完整 Python 运行时 + WebView 绑定。如果在意体积或需要多人共享访问，用下面的便携包模式。
+
+> **WebView2 依赖：** Windows 10 1803+/11 通常预装 WebView2 运行时。极少数老机器缺失时，启动会弹窗提示并给出[微软官方下载地址](https://developer.microsoft.com/microsoft-edge/webview2/)。
+
+### 方式 B：下载便携包（内网 / 多人共享）
+
+> 适合：内网隔离环境、想让同事通过浏览器共同访问同一实例。
 
 1. 到 [Releases](../../releases/latest) 页面下载 `LineagePuzzle-v2.0.0-portable.zip`（约 44MB）
 2. 解压到任意目录（路径避免中文和空格）
@@ -86,7 +101,7 @@
 
 > 让同事访问？服务默认监听 `0.0.0.0:8000`，同事用 `http://你的IP:8000` 即可访问。拷贝 `app/data/` 给他，他启动后能看到相同的全局图谱。
 
-### 方式 B：从源码构建（开发者）
+### 方式 C：从源码构建（开发者）
 
 > 适合：想阅读/修改代码、贡献 PR 的开发者。需要联网环境。
 
@@ -124,6 +139,12 @@ cd ../backend && uvicorn app.main:app --host 0.0.0.0 --port 8000
 打开 `http://localhost:8000`（单进程同时服务页面 + API）。
 
 > **不需要数据库**。血缘提取纯靠 SQL 语法解析，数据库仅用于可选的表存在性校验。
+
+**桌面版打包**（开发者本地构建最新版）：
+
+```bash
+pack_desktop.bat    # 产出 dist/LineagePuzzle/（约 200MB，PyInstaller onedir）
+```
 
 ---
 
@@ -211,6 +232,9 @@ datalineage_visualizer/
 │   ├── PROJECT.en.md      # 详细项目文档（英文）
 │   └── images/            # 截图
 ├── ctl.sh                 # 一键启停脚本
+├── desktop.py             # 桌面版入口（PyWebView 窗口模式）
+├── LineagePuzzle.spec     # 桌面版 PyInstaller 打包配置
+├── pack_desktop.bat       # 桌面版打包脚本
 └── pack_portable.bat      # 便携版打包脚本
 ```
 

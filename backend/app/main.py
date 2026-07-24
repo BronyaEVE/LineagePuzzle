@@ -32,6 +32,14 @@ async def health_check():
 # 离线分发包里 frontend/dist 已 build，此处自动托管，访问 http://localhost:8000
 # 同时拿到前端页面和 /api/* 接口（同源，无 CORS 问题）。
 # 必须放在所有 /api/* 路由注册之后，否则会拦截 API 请求。
-_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+#
+# 路径解析顺序：
+#   1. 环境变量 LINEAGE_FRONTEND_DIST（桌面打包版由 desktop.py 设置，指向 exe 同级 frontend/dist）
+#   2. 默认：相对 main.py 回溯三级的 frontend/dist（dev 与便携包布局）
+import os
+_FRONTEND_DIST = Path(
+    os.environ.get("LINEAGE_FRONTEND_DIST")
+    or (Path(__file__).resolve().parent.parent.parent / "frontend" / "dist")
+)
 if _FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
