@@ -309,7 +309,9 @@ _DEFAULT_LOCKED_RULES = [
     {
         "id": "builtin-block-comment",
         "name": "去块注释 /* */",
-        "pattern": r"/\*.*?\*/",
+        # [\s\S] 匹配任意字符（含换行），处理多行 /* ... */ 块注释；
+        # 旧的 .*? 不跨行，多行注释会漏掉。
+        "pattern": r"/\*[\s\S]*?\*/",
         "replacement": "",
         "enabled": True,
         "builtin": True,
