@@ -21,12 +21,6 @@ export interface AnalyzeRequest {
   database_config: DatabaseConfig | null;
 }
 
-export interface CorrectStatementRequest {
-  corrected_text: string;
-  tables_referenced: string[];
-  tables_modified: string[];
-}
-
 /** 单条预处理规则（正则替换）。
  * 把「参数映射」和「自定义清洗」统一为规则。分析前按数组顺序执行 re.sub(pattern, replacement)。
  */

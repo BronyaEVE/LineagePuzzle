@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useRef, useEffect } from "react";
+import React, { useMemo, useState, useRef, useEffect, useCallback } from "react";
 import {
   ReactFlow,
   Background,
@@ -18,7 +18,6 @@ import { Card, Empty, Tooltip, Drawer, Tag, Typography, Button, message } from "
 import { ColumnWidthOutlined, ColumnHeightOutlined, FileImageOutlined, FileOutlined } from "@ant-design/icons";
 import { toPng } from "html-to-image";
 import type { GlobalGraph, GlobalEdge, Visualization, ColumnMapping } from "../types";
-import { GLOBAL_ID } from "../types";
 import { impactAnalysis as fetchImpactAnalysis } from "../api/client";
 
 const NODE_COLORS: Record<string, string> = {
@@ -393,7 +392,9 @@ const CollapseContext = React.createContext<{
   isVertical: boolean;
 }>({ toggleUp: () => {}, toggleDown: () => {}, isVertical: true });
 
-const CollapsibleNode: React.FC<{ id: string; data: CollapsibleNodeData }> = ({ id, data }) => {
+// React.memo：大图（数百节点）下父组件任何状态变化都不再全量重渲染节点组件；
+// 节点数据由 node-sync effect 以保持引用稳定的方式更新（数据不变则不触发）。
+const CollapsibleNode: React.FC<{ id: string; data: CollapsibleNodeData }> = React.memo(function CollapsibleNode({ id, data }) {
   const { toggleUp, toggleDown, isVertical } = React.useContext(CollapseContext);
   // Handle 是 ReactFlow 边的连接点。默认节点类型内置 Handle，自定义节点必须手动加，
   // 否则边找不到连接点 → path 不渲染（这正是之前边消失的根因）。
@@ -426,7 +427,7 @@ const CollapsibleNode: React.FC<{ id: string; data: CollapsibleNodeData }> = ({ 
       )}
     </div>
   );
-};
+});
 
 const collapsibleNodeTypes = { collapsible: CollapsibleNode };
 
@@ -450,21 +451,22 @@ export interface FocusTarget {
 interface Props {
   globalGraph: GlobalGraph | null;
   visualization: Visualization | null;
-  highlightScriptId: string;
-  highlightSeq: number | null;
-  // 点边时反向高亮对应语句（列级场景：点边→右栏语句高亮）
-  onEdgeSelectSeq?: (seq: number | null) => void;
+  // 视图模式：global = 全局图谱；subgraph = 表邻域子图（visualization 必传）。
+  // （表为中心改造后不再有"脚本视图"；旧 highlightScriptId 语义已废弃）
+  viewMode: "global" | "subgraph";
   // 搜索选中后聚焦+高亮（由 App/Header 的搜索框驱动）
   focusTarget?: FocusTarget | null;
   // 标签筛选命中脚本 id 集合。null = 不筛选（显示全部全局边）；
   // 非 null = 全局视图下只渲染 script_id 在此集合中的边 + 这些边的端点节点（边驱动 + 孤立表补显）。
   // 单脚本视图忽略此参数。
   tagFilteredScriptIds?: Set<string> | null;
+  // 多表分析：选中的表集合，节点加蓝色描边强调（单表视图 = 1 个元素的特例）。
+  emphasizedNodes?: Set<string> | null;
 }
 
 const LineageGraph: React.FC<Props> = ({
-  globalGraph, visualization, highlightScriptId, highlightSeq, onEdgeSelectSeq, focusTarget,
-  tagFilteredScriptIds,
+  globalGraph, visualization, viewMode, focusTarget,
+  tagFilteredScriptIds, emphasizedNodes,
 }) => {
   const [layoutDir, setLayoutDir] = useState<LayoutDir>("TB");
   const isVertical = layoutDir === "TB";
@@ -505,8 +507,8 @@ const LineageGraph: React.FC<Props> = ({
 
   // 当选中脚本时，使用脚本自己的 visualization；否则用全局图
   const { laidNodes, laidEdges } = useMemo(() => {
-    // 选了脚本（非全局）→ 用脚本级别的 visualization
-    if (highlightScriptId !== GLOBAL_ID && visualization && visualization.nodes.length > 0) {
+    // 表邻域子图模式 → 用 App 构建的 visualization（多表合并 BFS 邻域）
+    if (viewMode === "subgraph" && visualization && visualization.nodes.length > 0) {
       const nodes: Node[] = visualization.nodes.map((n) => {
         // expandedNodeId 不进本 useMemo 依赖：展开是纯样式变化，
         // 不应触发全图重新布局（autoLayout 是 O(V+E)）。展开效果由下面的
@@ -591,7 +593,7 @@ const LineageGraph: React.FC<Props> = ({
     }));
 
     return { laidNodes: autoLayout(nodes, edges, layoutDir), laidEdges: edges };
-  }, [globalGraph, visualization, highlightScriptId, layoutDir, tagFilteredScriptIds]);
+  }, [globalGraph, visualization, viewMode, layoutDir, tagFilteredScriptIds]);
 
   // 折叠过滤：基于折叠状态计算隐藏节点，再过滤显示的节点/边
   const hiddenNodes = useMemo(
@@ -658,83 +660,60 @@ const LineageGraph: React.FC<Props> = ({
   const [nodes, setNodes, onNodesChange] = useNodesState(visibleNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(visibleEdges);
 
-  // 高亮逻辑：单边（点边）> 影响分析（上下游双色）> 语句级（点语句）> 脚本级 > 默认
+  // 高亮逻辑：单边（点边）> 影响分析（上下游双色）> 字段搜索 > 默认
   //
   // 基于 visibleEdges（折叠后）重算高亮。折叠时高亮的边如果被隐藏，自然消失。
+  //
+  // 性能：先算出每条边的目标样式 (animated, stroke, strokeWidth, labelFill)，
+  // 与现有值逐一比较，全部相同则返回原对象（保持引用稳定）——React Flow
+  // 内部按引用相等跳过未变边的更新，避免每次高亮变化全量重渲染数千条边。
   React.useEffect(() => {
     setEdges(visibleEdges.map((e) => {
-      // 最高优先级：点边单条高亮（用 edge.id 定位，避免同 seq 多边被误点亮）
+      // 计算目标样式（分支按优先级）
+      let animated: boolean;
+      let stroke: string;
+      let strokeWidth: number;
+      let labelFill: string;
       if (selectedEdgeId !== null) {
+        // 最高优先级：点边单条高亮（用 edge.id 定位，避免同 seq 多边被误点亮）
         const hl = e.id === selectedEdgeId;
-        return {
-          ...e, animated: hl,
-          style: { ...e.style, stroke: hl ? "#1890ff" : "#d9d9d9", strokeWidth: hl ? 3 : 1.5 },
-          labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#999" },
-        };
-      }
-      // 影响分析高亮：下游橙 #fa8c16，上游青 #13c2c2，无关边灰
-      if (hasImpactHighlight) {
-        const isDown = impactDownstreamEdges.has(e.id);
-        const isUp = impactUpstreamEdges.has(e.id);
-        if (isDown) {
-          return {
-            ...e, animated: true,
-            style: { ...e.style, stroke: "#fa8c16", strokeWidth: 3 },
-            labelStyle: { ...e.labelStyle, fill: "#fa8c16" },
-          };
+        animated = hl; stroke = hl ? "#1890ff" : "#d9d9d9"; strokeWidth = hl ? 3 : 1.5; labelFill = hl ? "#1890ff" : "#999";
+      } else if (hasImpactHighlight) {
+        // 影响分析高亮：下游橙 #fa8c16，上游青 #13c2c2，无关边灰
+        if (impactDownstreamEdges.has(e.id)) {
+          animated = true; stroke = "#fa8c16"; strokeWidth = 3; labelFill = "#fa8c16";
+        } else if (impactUpstreamEdges.has(e.id)) {
+          animated = true; stroke = "#13c2c2"; strokeWidth = 3; labelFill = "#13c2c2";
+        } else {
+          animated = false; stroke = "#d9d9d9"; strokeWidth = 1; labelFill = "#bbb";
         }
-        if (isUp) {
-          return {
-            ...e, animated: true,
-            style: { ...e.style, stroke: "#13c2c2", strokeWidth: 3 },
-            labelStyle: { ...e.labelStyle, fill: "#13c2c2" },
-          };
-        }
-        // 无关边：灰、不流动
-        return {
-          ...e, animated: false,
-          style: { ...e.style, stroke: "#d9d9d9", strokeWidth: 1 },
-          labelStyle: { ...e.labelStyle, fill: "#bbb" },
-        };
-      }
-      // 字段搜索高亮：命中的边紫色 #722ed1（与搜索框 ◇ 图标同色），其他灰。
-      // 优先级低于单边选中/影响分析，高于语句级/脚本级。
-      if (hasFieldHighlight) {
+      } else if (hasFieldHighlight) {
+        // 字段搜索高亮：命中的边紫色 #722ed1（与搜索框 ◇ 图标同色），其他灰
         const hl = fieldHighlightEdges.has(e.id);
-        return {
-          ...e, animated: hl,
-          style: { ...e.style, stroke: hl ? "#722ed1" : "#d9d9d9", strokeWidth: hl ? 3 : 1.5 },
-          labelStyle: { ...e.labelStyle, fill: hl ? "#722ed1" : "#999" },
-        };
+        animated = hl; stroke = hl ? "#722ed1" : "#d9d9d9"; strokeWidth = hl ? 3 : 1.5; labelFill = hl ? "#722ed1" : "#999";
+      } else {
+        // 默认：全部正常显示（不流动动画，避免边多时卡顿）
+        // （旧的语句级/脚本级高亮分支已随脚本视图一并移除——表为中心改造后无触发路径）
+        animated = false; stroke = "#8c8c8c"; strokeWidth = 2; labelFill = "#333";
       }
-      // 语句级别高亮（右栏点语句：该 seq 的所有边，多条是期望行为）
-      if (highlightSeq !== null) {
-        const seq = e.data?.statement_seq;
-        const hl = seq === highlightSeq;
-        return {
-          ...e, animated: hl,
-          style: { ...e.style, stroke: hl ? "#1890ff" : "#d9d9d9", strokeWidth: hl ? 3 : 1.5 },
-          labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#999" },
-        };
+      // 引用稳定：状态未变的边直接返回原对象
+      const st = e.style as { stroke?: string; strokeWidth?: number } | undefined;
+      const ls = e.labelStyle as { fill?: string } | undefined;
+      if (
+        e.animated === animated &&
+        st?.stroke === stroke &&
+        st?.strokeWidth === strokeWidth &&
+        ls?.fill === labelFill
+      ) {
+        return e;
       }
-      // 全局图：选中脚本时高亮该脚本（script_id）的边，其他灰
-      // （方案B后此分支仅在兼容旧逻辑时触发，正常路径下全局视图 highlightScriptId === GLOBAL_ID）
-      // 表为中心改造后：visualization 模式（脚本图/表邻域子图）的边不带 script_id，
-      // 该分支只在全局视图生效，否则子图边会全部灰显。
-      if (highlightScriptId !== GLOBAL_ID && !visualization?.nodes.length) {
-        const sid = (e.data as { script_id?: string } | undefined)?.script_id;
-        const hl = sid === highlightScriptId;
-        return {
-          ...e, animated: hl,
-          style: { ...e.style, stroke: hl ? "#1890ff" : "#d9d9d9", strokeWidth: hl ? 2.5 : 1 },
-          labelStyle: { ...e.labelStyle, fill: hl ? "#1890ff" : "#bbb" },
-        };
-      }
-      // 默认：全部正常显示（不流动动画，避免边多时卡顿）
-      return { ...e, animated: false, style: { ...e.style, stroke: "#8c8c8c", strokeWidth: 2 },
-        labelStyle: { ...e.labelStyle, fill: "#333" } };
+      return {
+        ...e, animated,
+        style: { ...e.style, stroke, strokeWidth },
+        labelStyle: { ...e.labelStyle, fill: labelFill },
+      };
     }));
-  }, [visibleEdges, highlightSeq, highlightScriptId, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, hasFieldHighlight, fieldHighlightEdges, visualization, setEdges]);
+  }, [visibleEdges, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, hasFieldHighlight, fieldHighlightEdges, setEdges]);
 
   // 搜索选中后聚焦+高亮（由 App 的 focusTarget 驱动）。
   // 折叠链可能把目标节点隐藏 → fitView 找不到不可见节点会静默失败。
@@ -779,7 +758,7 @@ const LineageGraph: React.FC<Props> = ({
     const rf = reactFlowRef.current;
     if (focusTarget.type === "node") {
       // 搜表名 = 点节点的效果：fitView + 展开表名 + 影响分析高亮（上下游双色）
-      rf.fitView({ nodes: [{ id: focusTarget.id }], padding: 0.5, duration: 400, maxZoom: 1.5 });
+      rf.fitView({ nodes: [{ id: focusTarget.id }], padding: 0.5, duration: 0, maxZoom: 1.5 });
       setExpandedNodeId(focusTarget.id);
       setSelectedEdgeId(null);
       setSelectedEdge(null);
@@ -789,7 +768,7 @@ const LineageGraph: React.FC<Props> = ({
       const e = hitEdges[0];
       rf.fitView({
         nodes: [{ id: e.source }, { id: e.target }],
-        padding: 0.5, duration: 400, maxZoom: 1.5,
+        padding: 0.5, duration: 0, maxZoom: 1.5,
       });
       setSelectedEdgeId(e.id);
       setSelectedEdge(e);
@@ -798,7 +777,7 @@ const LineageGraph: React.FC<Props> = ({
       // 字段搜索：高亮所有命中边 + fitView 涵盖这些边的全部端点节点
       rf.fitView({
         nodes: [...needVisible].map((id) => ({ id })),
-        padding: 0.5, duration: 400, maxZoom: 1.5,
+        padding: 0.5, duration: 0, maxZoom: 1.5,
       });
       setFieldHighlightEdges(new Set(hitEdges.map((e) => e.id)));
       setSelectedEdgeId(null);
@@ -825,7 +804,7 @@ const LineageGraph: React.FC<Props> = ({
     const t = window.setTimeout(() => {
       if (pendingFocus.type === "node") {
         // 搜表名 = 点节点效果：fitView + 展开表名 + 影响分析高亮（上下游双色）
-        rf.fitView({ nodes: [{ id: pendingFocus.id }], padding: 0.5, duration: 400, maxZoom: 1.5 });
+        rf.fitView({ nodes: [{ id: pendingFocus.id }], padding: 0.5, duration: 0, maxZoom: 1.5 });
         setExpandedNodeId(pendingFocus.id);
         setSelectedEdgeId(null);
         setSelectedEdge(null);
@@ -835,7 +814,7 @@ const LineageGraph: React.FC<Props> = ({
         const e = hitEdges[0];
         rf.fitView({
           nodes: [{ id: e.source }, { id: e.target }],
-          padding: 0.5, duration: 400, maxZoom: 1.5,
+          padding: 0.5, duration: 0, maxZoom: 1.5,
         });
         setSelectedEdgeId(e.id);
         setSelectedEdge(e);
@@ -843,7 +822,7 @@ const LineageGraph: React.FC<Props> = ({
       } else if (pendingFocus.type === "field") {
         rf.fitView({
           nodes: [...needVisible].map((id) => ({ id })),
-          padding: 0.5, duration: 400, maxZoom: 1.5,
+          padding: 0.5, duration: 0, maxZoom: 1.5,
         });
         setFieldHighlightEdges(new Set(hitEdges.map((e) => e.id)));
         setSelectedEdgeId(null);
@@ -871,25 +850,46 @@ const LineageGraph: React.FC<Props> = ({
       const expanded = expandedNodeId === n.id;
       const isUpCollapsed = collapsedUpstream.has(n.id);
       const isDownCollapsed = collapsedDownstream.has(n.id);
-      const fullName = (n.data as { fullName?: string }).fullName ?? String((n.data as { label?: unknown }).label ?? "");
+      const d = n.data as unknown as CollapsibleNodeData & { fullName?: string };
+      const fullName = d.fullName ?? String(d.label ?? "");
+      const hiddenUpCount = hiddenUpCounts.get(n.id) ?? 0;
+      const hiddenDownCount = hiddenDownCounts.get(n.id) ?? 0;
+      const hasInEdges = (inDeg.get(n.id) ?? 0) > 0 || isUpCollapsed;
+      const hasOutEdges = (outDeg.get(n.id) ?? 0) > 0 || isDownCollapsed;
+      const targetStyle = expanded
+        ? { ...n.style, maxWidth: "none", border: "3px solid #fff", boxShadow: "0 0 8px rgba(255,255,255,0.8)" }
+        : emphasizedNodes?.has(n.id)
+          ? { ...n.style, border: "2px solid #1890ff", boxShadow: "0 0 6px rgba(24,144,255,0.6)" }
+          : n.style;
+      // 引用稳定：注入的折叠按钮数据与样式都未变 → 返回原对象，
+      // 配合 React.memo 节点组件避免全量重渲染（数百节点下的关键优化）
+      if (
+        d.isUpCollapsed === isUpCollapsed &&
+        d.isDownCollapsed === isDownCollapsed &&
+        d.hiddenUpCount === hiddenUpCount &&
+        d.hiddenDownCount === hiddenDownCount &&
+        d.hasInEdges === hasInEdges &&
+        d.hasOutEdges === hasOutEdges &&
+        targetStyle === n.style
+      ) {
+        return n;
+      }
       return {
         ...n,
         data: {
           ...n.data,
-          label: expanded ? fullName : (n.data as { label?: unknown }).label,
+          label: expanded ? fullName : d.label,
           isUpCollapsed,
           isDownCollapsed,
-          hiddenUpCount: hiddenUpCounts.get(n.id) ?? 0,
-          hiddenDownCount: hiddenDownCounts.get(n.id) ?? 0,
-          hasInEdges: (inDeg.get(n.id) ?? 0) > 0 || isUpCollapsed,
-          hasOutEdges: (outDeg.get(n.id) ?? 0) > 0 || isDownCollapsed,
+          hiddenUpCount,
+          hiddenDownCount,
+          hasInEdges,
+          hasOutEdges,
         },
-        style: expanded
-          ? { ...n.style, maxWidth: "none", border: "3px solid #fff", boxShadow: "0 0 8px rgba(255,255,255,0.8)" }
-          : n.style,
+        style: targetStyle,
       };
     }));
-  }, [visibleNodes, visibleEdges, expandedNodeId, collapsedUpstream, collapsedDownstream, hiddenUpCounts, hiddenDownCounts, setNodes]);
+  }, [visibleNodes, visibleEdges, expandedNodeId, collapsedUpstream, collapsedDownstream, hiddenUpCounts, hiddenDownCounts, emphasizedNodes, setNodes]);
 
   // 视图切换清理：切脚本/切全局时，清掉属于上一个图的内部选中态。
   // 否则全局点边（ge-5）后切脚本，selectedEdgeId 仍是 ge-5 匹配不到 e- 边，
@@ -905,10 +905,12 @@ const LineageGraph: React.FC<Props> = ({
     setCollapsedUpstream(new Set());
     setCollapsedDownstream(new Set());
     setPendingFocus(null); // 作废可能暂存的搜索聚焦补做
-  }, [highlightScriptId]);
+  }, [viewMode]);
 
-  // 折叠/展开操作（由自定义节点组件的按钮调用）
-  const toggleCollapseUp = (nodeId: string) => {
+  // 折叠/展开操作（由自定义节点组件的按钮调用）。
+  // useCallback：函数只依赖 setState（稳定引用），memo 化避免每次渲染
+  // 生成新函数导致 CollapseContext value 变化 → 全部 memo 节点失效。
+  const toggleCollapseUp = useCallback((nodeId: string) => {
     setCollapsedUpstream((prev) => {
       const next = new Set(prev);
       if (next.has(nodeId)) next.delete(nodeId);
@@ -919,8 +921,8 @@ const LineageGraph: React.FC<Props> = ({
     setImpactDownstreamEdges(new Set());
     setImpactUpstreamEdges(new Set());
     setFieldHighlightEdges(new Set());
-  };
-  const toggleCollapseDown = (nodeId: string) => {
+  }, []);
+  const toggleCollapseDown = useCallback((nodeId: string) => {
     setCollapsedDownstream((prev) => {
       const next = new Set(prev);
       if (next.has(nodeId)) next.delete(nodeId);
@@ -930,7 +932,14 @@ const LineageGraph: React.FC<Props> = ({
     setImpactDownstreamEdges(new Set());
     setImpactUpstreamEdges(new Set());
     setFieldHighlightEdges(new Set());
-  };
+  }, []);
+
+  // CollapseContext value memo 化：toggle 已 useCallback，isVertical 随布局方向，
+  // 组合后的对象也 memo —— value 引用稳定时 memo 节点不会因 context 重渲染。
+  const collapseContextValue = useMemo(
+    () => ({ toggleUp: toggleCollapseUp, toggleDown: toggleCollapseDown, isVertical }),
+    [toggleCollapseUp, toggleCollapseDown, isVertical],
+  );
 
   // 触发影响分析：拉取某节点的上下游全部路径 → 高亮对应边（下游橙/上游青）。
   // 抽出来供 onNodeClick 和搜索聚焦（搜表名）复用——搜表名 = 点节点的效果。
@@ -968,7 +977,7 @@ const LineageGraph: React.FC<Props> = ({
   };
 
   const hasData = laidNodes.length > 0;
-  const isScriptView = highlightScriptId !== GLOBAL_ID && !!visualization?.nodes.length;
+  const isSubgraphView = viewMode === "subgraph" && !!visualization?.nodes.length;
 
   // === 图形导出 ===
   const handleExportPng = async () => {
@@ -997,8 +1006,11 @@ const LineageGraph: React.FC<Props> = ({
   };
 
   const handleExportHtml = () => {
-    // 导出自包含 HTML：nodes/edges JSON + React Flow CDN，打开是可缩放只读图
-    const data = JSON.stringify({ nodes: laidNodes, edges: laidEdges }, null, 2);
+    // 导出自包含 HTML：nodes/edges JSON + React Flow CDN，打开是可缩放只读图。
+    // 安全：JSON.stringify 不转义 </script>，表名来自用户 SQL（可含带引号标识符），
+    // 直接内嵌可注入脚本 → 转义 </ 为 <\/（JSON 语法不变，语义等价）
+    const data = JSON.stringify({ nodes: laidNodes, edges: laidEdges }, null, 2)
+      .replace(/<\//g, "<\\/");
     const html = `<!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -1041,7 +1053,7 @@ const LineageGraph: React.FC<Props> = ({
 
   return (
     <Card
-      title={isScriptView ? "脚本血缘图" : "全局血缘图谱"}
+      title={isSubgraphView ? "表邻域子图" : "全局血缘图谱"}
       size="small"
       style={{ height: "100%" }}
       extra={
@@ -1072,10 +1084,13 @@ const LineageGraph: React.FC<Props> = ({
     >
       {hasData ? (
         <div ref={wrapperRef} style={{ height: "calc(100vh - 160px)", minHeight: 300 }}>
-          <CollapseContext.Provider value={{ toggleUp: toggleCollapseUp, toggleDown: toggleCollapseDown, isVertical }}>
+          <CollapseContext.Provider value={collapseContextValue}>
           <ReactFlow
             nodes={nodes} edges={edges}
             nodeTypes={collapsibleNodeTypes}
+            // 性能：只渲染视口内的节点/边（大图下 DOM 数量与可见区域成正比，
+            // 而非与全图规模成正比）；缩放/平移时按需挂载
+            onlyRenderVisibleElements
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
             onInit={(inst) => { reactFlowRef.current = inst; }}
             onNodeClick={(_, node) => {
@@ -1116,14 +1131,14 @@ const LineageGraph: React.FC<Props> = ({
           </CollapseContext.Provider>
         </div>
       ) : (
-        <Empty description={isScriptView ? "该脚本无血缘数据" : "提交第一个脚本开始构建血缘图谱"} style={{ marginTop: 80 }} />
+        <Empty description={isSubgraphView ? "该表无血缘数据" : "提交第一个脚本开始构建血缘图谱"} style={{ marginTop: 80 }} />
       )}
 
       {/* 列级血缘映射抽屉：点边展示目标列←源列 + transform */}
       <Drawer
         title="列级血缘映射"
         open={!!selectedEdge}
-        onClose={() => { setSelectedEdge(null); setSelectedEdgeId(null); if (onEdgeSelectSeq) onEdgeSelectSeq(null); }}
+        onClose={() => { setSelectedEdge(null); setSelectedEdgeId(null); }}
         width={440}
         size="default"
       >

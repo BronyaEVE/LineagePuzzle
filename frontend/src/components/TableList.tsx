@@ -36,9 +36,14 @@ const ROLE_LABEL: Record<string, string> = {
 interface Props {
   nodes: VisNode[];
   edges: GlobalEdge[];
-  /** 当前选中表；GLOBAL_ID 表示全局视图（置顶项）。 */
-  selectedTable: string;
+  /** 当前选中的表集合（多表分析）。 */
+  selectedTables: string[];
+  /** 点击表 → App 切换该表的选中态（toggle）；GLOBAL_ID → 全局图谱。 */
   onSelect: (id: string) => void;
+  /** 清空多选（回到空态，不进全局）。 */
+  onClearSelection: () => void;
+  /** 全局图谱是否激活（选中集为空且显式打开全局时）。 */
+  globalActive: boolean;
   tagSchema: TagSchema;
   selectedTags: string[];
   onSelectedTagsChange: (tags: string[]) => void;
@@ -47,7 +52,7 @@ interface Props {
 }
 
 const TableList: React.FC<Props> = ({
-  nodes, edges, selectedTable, onSelect,
+  nodes, edges, selectedTables, onSelect, onClearSelection, globalActive,
   tagSchema, selectedTags, onSelectedTagsChange, hitScriptIds,
 }) => {
   const [keyword, setKeyword] = useState("");
@@ -116,26 +121,37 @@ const TableList: React.FC<Props> = ({
     </div>
   );
 
-  const isGlobal = selectedTable === GLOBAL_ID;
   const hasFilter = selectedTags.length > 0;
 
   return (
     <Card
       title={
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span>表列表 ({nodes.length})</span>
-          {tagSchema.dimensions.length > 0 && (
-            <Popover content={renderFilterContent()} trigger="click" placement="bottomLeft">
-              <Button
-                size="small"
-                type="text"
-                icon={<FilterOutlined />}
-                style={{ color: hasFilter ? "#1890ff" : "#999", fontSize: 12 }}
-              >
-                筛选{hasFilter ? ` (${selectedTags.length})` : ""}
+          <span>
+            表列表 ({nodes.length})
+            {selectedTables.length > 0 && (
+              <Tag color="blue" style={{ marginLeft: 6, fontSize: 11 }}>已选 {selectedTables.length}</Tag>
+            )}
+          </span>
+          <span>
+            {selectedTables.length > 0 && (
+              <Button size="small" type="text" onClick={onClearSelection} style={{ fontSize: 12, color: "#999", marginRight: 4 }}>
+                清空
               </Button>
-            </Popover>
-          )}
+            )}
+            {tagSchema.dimensions.length > 0 && (
+              <Popover content={renderFilterContent()} trigger="click" placement="bottomLeft">
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<FilterOutlined />}
+                  style={{ color: hasFilter ? "#1890ff" : "#999", fontSize: 12 }}
+                >
+                  筛选{hasFilter ? ` (${selectedTags.length})` : ""}
+                </Button>
+              </Popover>
+            )}
+          </span>
         </div>
       }
       size="small"
@@ -169,17 +185,17 @@ const TableList: React.FC<Props> = ({
         )}
       </div>
 
-      {/* 全局图谱虚拟项（置顶） */}
+      {/* 全局图谱虚拟项（置顶，非默认：显式点击进入；小图默认全局） */}
       <List.Item
         onClick={() => onSelect(GLOBAL_ID)}
         style={{
           cursor: "pointer", padding: "8px 12px",
-          background: isGlobal ? "#e6f7ff" : undefined,
+          background: globalActive ? "#e6f7ff" : undefined,
         }}
       >
         <List.Item.Meta
           avatar={<GlobalOutlined style={{ color: "#1890ff", fontSize: 18, marginTop: 4 }} />}
-          title={<Text strong={isGlobal} style={{ fontSize: 13 }}>全局图谱</Text>}
+          title={<Text strong={globalActive} style={{ fontSize: 13 }}>全局图谱</Text>}
           description={
             <Text type="secondary" style={{ fontSize: 11 }}>
               {nodes.length} 张表 · {edges.length} 条血缘
@@ -196,7 +212,9 @@ const TableList: React.FC<Props> = ({
           dataSource={filtered}
           style={{ maxHeight: "calc(100vh - 320px)", overflow: "auto" }}
           renderItem={(item) => {
-            const isSelected = selectedTable === item.id;
+            // 多选语义：点击 toggle 选中态；已选项加序号徽标
+            const selIdx = selectedTables.indexOf(item.id);
+            const isSelected = selIdx >= 0;
             const dimmed = hasFilter && !hitTableIds.has(item.id);
             const c = counts.get(item.id) ?? { up: 0, down: 0 };
             return (
@@ -212,6 +230,11 @@ const TableList: React.FC<Props> = ({
                   avatar={<TableOutlined style={{ color: "#8c8c8c", fontSize: 16, marginTop: 3 }} />}
                   title={
                     <Text strong={isSelected} style={{ fontSize: 12 }} ellipsis={{ tooltip: item.id }}>
+                      {isSelected && (
+                        <Tag color="blue" style={{ fontSize: 10, margin: 0, marginRight: 4, lineHeight: "16px" }}>
+                          {selIdx + 1}
+                        </Tag>
+                      )}
                       {item.id}
                     </Text>
                   }

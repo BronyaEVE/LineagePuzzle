@@ -38,11 +38,12 @@ function App() {
   // === 状态 ===
   const [scripts, setScripts] = useState<ScriptSummary[]>([]);
   const [globalGraph, setGlobalGraph] = useState<GlobalGraph | null>(null);
-  // 表为中心导航：选中表（GLOBAL_ID = 全局视图）。脚本不再是导航单元。
-  const [selectedTable, setSelectedTable] = useState<string>(GLOBAL_ID);
+  // 表为中心导航（多表分析）：选中的表集合；空 = 空态/全局。脚本不再是导航单元。
+  const [selectedTables, setSelectedTables] = useState<string[]>([]);
+  // 全局图谱显式开关：null = 未定（图加载后按规模自动决定：小图默认全局，大图空态）
+  const [showGlobal, setShowGlobal] = useState<boolean | null>(null);
   // 表邻域子图深度（跳数）
   const [subgraphDepth, setSubgraphDepth] = useState<number>(2);
-  const [highlightSeq, setHighlightSeq] = useState<number | null>(null);
   // 脚本管理弹窗（上传/重命名/删除/打标的归置地）
   const [scriptMgrOpen, setScriptMgrOpen] = useState(false);
 
@@ -95,10 +96,28 @@ function App() {
   // 解决连续两次搜同一目标（值相同）时不重新聚焦的问题。
   const focusTokenRef = useRef(0);
 
-  // === 选中表（主导航动作）===
+  // === 选中表（主导航动作，多选 toggle）===
+  // GLOBAL_ID → 全局图谱（清空选择，显式打开全局）
+  // 表 id → toggle 选中态（多表分析：合并邻域子图）；任一表选中即退出全局
   const handleSelectTable = useCallback((id: string) => {
-    setSelectedTable(id || GLOBAL_ID);
-    setHighlightSeq(null);
+
+    setFocusTarget(null);
+    if (id === GLOBAL_ID) {
+      setSelectedTables([]);
+      setShowGlobal(true);
+      return;
+    }
+    setSelectedTables((prev) =>
+      prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]
+    );
+    setShowGlobal(false);
+  }, []);
+
+  // 清空多选（回到空态，不进全局）
+  const handleClearSelection = useCallback(() => {
+    setSelectedTables([]);
+    setShowGlobal(false);
+
     setFocusTarget(null);
   }, []);
 
@@ -177,8 +196,16 @@ function App() {
     }
   };
 
-  // isGlobalView：未选表（全局图谱视图）
-  const isGlobalView = selectedTable === GLOBAL_ID;
+  // isGlobalView：未选表且显式打开全局（全局图谱已降级为非默认视图）
+  const isGlobalView = selectedTables.length === 0 && showGlobal === true;
+
+  // 智能落地视图：图加载后未显式选择时 —— 小图（≤50 节点，可读）默认全局，
+  // 大图默认空态（全局大图是发面饼，不该作为落地视图）
+  useEffect(() => {
+    if (showGlobal === null && globalGraph !== null) {
+      setShowGlobal(globalGraph.nodes.length <= 50);
+    }
+  }, [globalGraph, showGlobal]);
 
   // 筛选命中脚本 id 集合（语义丙：维度内 OR、维度间 AND）。
   // 有筛选标签时计算；无筛选时返回空 Set（调用方据此判断「不筛选」）。
@@ -310,11 +337,16 @@ function App() {
   const edgeCount = globalGraph?.edges.length ?? 0;
   const scriptCount = scripts.length;
 
-  // === 表邻域子图（选中表时，中栏显示 question-driven 子图而非全局图）===
-  // 客户端 BFS：选中表 + 上游祖先 + 下游后代，限深 subgraphDepth 跳。
-  // 全局边数 ~2.5k，BFS 开销可忽略；复用 LineageGraph 的 visualization 渲染模式。
+  // === 表邻域子图（多表分析：选中集合的合并邻域）===
+  // 选中表集合 → emphasizedNodes（useMemo：内联 new Set 会让每次 App 渲染
+  // 都产生新引用，击穿 LineageGraph 的 node-sync effect 引用稳定优化）
+  const emphasizedTables = useMemo(() => new Set(selectedTables), [selectedTables]);
+
+  // 客户端 BFS：每张选中表的上游祖先 + 下游后代，限深 subgraphDepth 跳，取并集。
+  // 单表是 N=1 特例。全局边数 ~2.5k，BFS 开销可忽略；
+  // 复用 LineageGraph 的 visualization 渲染模式。
   const tableSubgraph = useMemo<Visualization | null>(() => {
-    if (!globalGraph || isGlobalView) return null;
+    if (!globalGraph || selectedTables.length === 0) return null;
     const edges = globalGraph.edges as GlobalEdge[];
     // 邻接表
     const outMap = new Map<string, GlobalEdge[]>();
@@ -323,8 +355,8 @@ function App() {
       let a = outMap.get(e.source); if (!a) { a = []; outMap.set(e.source, a); } a.push(e);
       let b = inMap.get(e.target); if (!b) { b = []; inMap.set(e.target, b); } b.push(e);
     }
-    // BFS 收集 depth 跳内的祖先/后代节点
-    const included = new Set<string>([selectedTable]);
+    // BFS 收集 depth 跳内的祖先/后代节点（多根并集）
+    const included = new Set<string>(selectedTables);
     const bfs = (start: string, map: Map<string, GlobalEdge[]>) => {
       let frontier = [start];
       for (let d = 0; d < subgraphDepth && frontier.length > 0; d++) {
@@ -338,8 +370,10 @@ function App() {
         frontier = next;
       }
     };
-    bfs(selectedTable, outMap); // 下游
-    bfs(selectedTable, inMap);  // 上游
+    for (const root of selectedTables) {
+      bfs(root, outMap); // 下游
+      bfs(root, inMap);  // 上游
+    }
     // 节点：从全局图取角色；边：两端都在集合内的全局边（完整展示子图内交叉血缘）
     const nodeById = new Map(globalGraph.nodes.map((n) => [n.id, n]));
     const nodes = [...included]
@@ -355,7 +389,7 @@ function App() {
         column_mappings: e.column_mappings,
       }));
     return { nodes, edges: subEdges };
-  }, [globalGraph, selectedTable, subgraphDepth, isGlobalView]);
+  }, [globalGraph, selectedTables, subgraphDepth]);
 
   // 搜索框的节点/边数据（始终全局图；表为中心后无单脚本视图）。
   // 边加 _edgeId 前缀，与 LineageGraph 全局视图渲染的边 id 一致。
@@ -424,6 +458,14 @@ function App() {
                 // 递增 token：即使连续两次搜同一目标，新 FocusTarget 引用不同，
                 // effect [focusTarget] 也会重跑，避免「重复搜索无反馈」。
                 const focusToken = ++focusTokenRef.current;
+                if (t.type === "node") {
+                  // 搜表 = 导航动作：直接选中该表（进入其邻域子图）并聚焦
+                  setSelectedTables((prev) => (prev.includes(t.id) ? prev : [...prev, t.id]));
+                  setShowGlobal(false);
+                } else if (!isGlobalView && selectedTables.length === 0) {
+                  // 边/字段目标需要完整图上下文：空态时切到全局视图
+                  setShowGlobal(true);
+                }
                 setFocusTarget({
                   type: t.type,
                   id: t.id,
@@ -465,13 +507,15 @@ function App() {
 
         <Content style={{ padding: 12, background: "#f5f5f5", flex: 1 }}>
           <div style={{ display: "flex", gap: 12, height: "calc(100vh - 100px)" }}>
-            {/* 左栏：表列表（表为中心导航） */}
+            {/* 左栏：表列表（表为中心导航，多表分析） */}
             <div style={{ width: 260, flexShrink: 0 }}>
               <TableList
                 nodes={globalGraph?.nodes ?? []}
                 edges={globalGraph?.edges ?? []}
-                selectedTable={selectedTable}
+                selectedTables={selectedTables}
                 onSelect={handleSelectTable}
+                onClearSelection={handleClearSelection}
+                globalActive={isGlobalView}
                 tagSchema={tagSchema}
                 selectedTags={selectedTags}
                 onSelectedTagsChange={setSelectedTags}
@@ -481,8 +525,8 @@ function App() {
 
             {/* 中栏：血缘图 / 列级追溯（视图切换） */}
             <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-              {/* 子图深度选择（仅表视图 + 血缘图模式） */}
-              {!isGlobalView && view === "graph" && (
+              {/* 子图深度选择（有选中表 + 血缘图模式） */}
+              {selectedTables.length > 0 && view === "graph" && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <Segmented
                     size="small"
@@ -495,32 +539,53 @@ function App() {
                     ]}
                   />
                   <span style={{ fontSize: 12, color: "#999" }}>
-                    {selectedTable} 的邻域子图（上游 + 下游）
+                    {selectedTables.length === 1
+                      ? `${selectedTables[0]} 的邻域子图（上游 + 下游）`
+                      : `${selectedTables.length} 张表的合并邻域子图`}
                   </span>
                 </div>
               )}
               <div style={{ flex: 1, minHeight: 0 }}>
                 {view === "trace" ? (
-                  <ColumnTrace initialTable={isGlobalView ? null : selectedTable} />
-                ) : (
+                  <ColumnTrace
+                    initialTable={selectedTables.length > 0 ? selectedTables[selectedTables.length - 1] : null}
+                  />
+                ) : isGlobalView ? (
                   <LineageGraph
                     globalGraph={globalGraph}
-                    visualization={tableSubgraph}
-                    highlightScriptId={selectedTable}
-                    highlightSeq={highlightSeq}
-                    onEdgeSelectSeq={setHighlightSeq}
+                    visualization={null}
+                    viewMode={"global" as const}
                     focusTarget={focusTarget}
                     // 标签筛选：仅全局视图 + 有筛选标签时传命中脚本集合，否则 null（不过滤）
-                    tagFilteredScriptIds={isGlobalView && selectedTags.length > 0 ? hitScriptIds : null}
+                    tagFilteredScriptIds={selectedTags.length > 0 ? hitScriptIds : null}
                   />
+                ) : selectedTables.length > 0 ? (
+                  <LineageGraph
+                    globalGraph={null}
+                    visualization={tableSubgraph}
+                    viewMode={"subgraph" as const}
+                    focusTarget={focusTarget}
+                    emphasizedNodes={emphasizedTables}
+                  />
+                ) : (
+                  <div style={{
+                    height: "100%", display: "flex", flexDirection: "column",
+                    alignItems: "center", justifyContent: "center", gap: 8,
+                    background: "#fafafa", borderRadius: 4,
+                  }}>
+                    <div style={{ fontSize: 15, color: "#555" }}>从左侧选择一张或多张表开始分析</div>
+                    <div style={{ fontSize: 12, color: "#999" }}>
+                      多选可查看合并邻域（表间关联）；大图请用搜索定位
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
 
-            {/* 右栏：表详情（角色/上下游计数/相关脚本下钻） */}
+            {/* 右栏：表详情（角色/上下游计数/相关脚本下钻；多表为汇总） */}
             <div style={{ width: 320, flexShrink: 0 }}>
               <TableDetail
-                table={isGlobalView ? "" : selectedTable}
+                tables={selectedTables}
                 nodes={globalGraph?.nodes ?? []}
                 edges={globalGraph?.edges ?? []}
                 scripts={scripts}

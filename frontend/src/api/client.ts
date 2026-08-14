@@ -9,6 +9,10 @@ const API_BASE = "/api";
 // 默认请求超时（ms）。后端卡住时前端不会永久 pending，超时后抛错让调用方提示用户。
 const DEFAULT_TIMEOUT = 15000;
 
+// 可选 API 令牌（LAN 共享模式的最低鉴权）：launcher 生成的 URL 自带 ?token=xxx，
+// 这里从自身 URL 读取一次，之后所有 /api 请求以 Bearer 头携带。
+const API_TOKEN = new URLSearchParams(window.location.search).get("token") ?? "";
+
 /**
  * 统一的 fetch 封装：带超时 + 统一错误信息解析。
  *
@@ -25,7 +29,9 @@ async function request<T>(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
-    const res = await fetch(url, { ...init, signal: controller.signal });
+    const headers = new Headers(init.headers);
+    if (API_TOKEN) headers.set("Authorization", `Bearer ${API_TOKEN}`);
+    const res = await fetch(url, { ...init, headers, signal: controller.signal });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(err.detail || `请求失败（${res.status}）`);

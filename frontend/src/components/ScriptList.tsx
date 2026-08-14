@@ -1,48 +1,36 @@
 import React from "react";
 import { Card, List, Typography, Button, Popconfirm, Input, Empty, Tag, Checkbox, Popover, message } from "antd";
 import {
-  DeleteOutlined, EditOutlined, FileTextOutlined, GlobalOutlined,
-  TagOutlined, FilterOutlined, CheckSquareOutlined,
+  DeleteOutlined, EditOutlined, FileTextOutlined,
+  TagOutlined, CheckSquareOutlined,
 } from "@ant-design/icons";
 import type { ScriptSummary, TagSchema } from "../types";
-import { GLOBAL_ID } from "../types";
 
 const { Text } = Typography;
 
+/**
+ * 脚本管理列表（仅在「脚本管理」弹窗内使用）。
+ *
+ * 表为中心改造后脚本不再是导航单元：本组件只保留管理能力
+ * （列表 / 重命名 / 删除 / 单条与批量打标）。旧的左栏职责
+ * （全局图谱虚拟项、标签筛选器、选中导航、筛选灰显）已随导航
+ * 迁移到 TableList，相关代码已删除。
+ */
 interface Props {
   scripts: ScriptSummary[];
-  selectedId: string;
-  onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
-  /** 全局图谱的节点/边数（用于虚拟项显示统计） */
-  tableCount?: number;
-  edgeCount?: number;
-  /** 标签维度定义表（管理员维护）。空时筛选器不展示可选项。 */
+  /** 标签维度定义表（管理员维护）。空时打标器不展示可选项。 */
   tagSchema: TagSchema;
-  /** 当前选中的筛选标签（扁平集合）。 */
-  selectedTags: string[];
-  onSelectedTagsChange: (tags: string[]) => void;
-  /** 命中筛选的脚本 id 集合（由 App 计算，用于列表项灰显判断）。 */
-  hitScriptIds: Set<string>;
-  /** 是否全局视图（筛选器仅在全局视图生效，单脚本视图灰显）。 */
-  isGlobalView: boolean;
   /** 给单个脚本打标（全量替换）。 */
   onSetScriptTags: (id: string, tags: string[]) => void;
   /** 批量给多个脚本打同一组标签。 */
   onBatchSetTags: (ids: string[], tags: string[]) => void;
-  /** 是否显示全局图谱虚拟项（左栏 true / 脚本管理弹窗 false）。默认 true。 */
-  showGlobalItem?: boolean;
-  /** 是否显示标签筛选器（筛选已移到表列表，弹窗内 false）。默认 true。 */
-  showTagFilter?: boolean;
 }
 
 const ScriptList: React.FC<Props> = ({
-  scripts, selectedId, onSelect, onDelete, onRename,
-  tableCount, edgeCount,
-  tagSchema, selectedTags, onSelectedTagsChange, hitScriptIds, isGlobalView,
-  onSetScriptTags, onBatchSetTags,
-  showGlobalItem = true, showTagFilter = true,
+  scripts, onDelete, onRename,
+  tagSchema, onSetScriptTags, onBatchSetTags,
 }) => {
   const [editingId, setEditingId] = React.useState<string | null>(null);
   const [editName, setEditName] = React.useState("");
@@ -65,15 +53,6 @@ const ScriptList: React.FC<Props> = ({
       onRename(editingId, editName.trim());
     }
     setEditingId(null);
-  };
-
-  // 切换筛选标签选中态
-  const toggleFilterTag = (tag: string) => {
-    if (selectedTags.includes(tag)) {
-      onSelectedTagsChange(selectedTags.filter((t) => t !== tag));
-    } else {
-      onSelectedTagsChange([...selectedTags, tag]);
-    }
   };
 
   // 单条打标 Popover 内容：按维度分组展示所有可选标签，勾选当前草稿
@@ -108,76 +87,6 @@ const ScriptList: React.FC<Props> = ({
           </div>
         ))}
       </div>
-    );
-  };
-
-  // 筛选器 Popover：按维度分组，复选框勾选触发筛选
-  const renderFilterContent = () => {
-    if (tagSchema.dimensions.length === 0) {
-      return (
-        <div style={{ width: 220, padding: "8px 4px", color: "#999", fontSize: 12 }}>
-          暂无标签维度。请先在「设置 → 标签维度」中定义维度和标签值。
-        </div>
-      );
-    }
-    return (
-      <div style={{ width: 240, maxHeight: 360, overflowY: "auto", padding: "4px 0" }}>
-        {tagSchema.dimensions.map((dim) => (
-          <div key={dim.name} style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 12, color: "#666", marginBottom: 4, fontWeight: 600 }}>{dim.name}</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 8px" }}>
-              {dim.values.map((v) => (
-                <Checkbox
-                  key={v}
-                  checked={selectedTags.includes(v)}
-                  onChange={() => toggleFilterTag(v)}
-                  style={{ fontSize: 12 }}
-                >
-                  {v}
-                </Checkbox>
-              ))}
-            </div>
-          </div>
-        ))}
-        {selectedTags.length > 0 && (
-          <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #f0f0f0" }}>
-            <Button size="small" type="link" onClick={() => onSelectedTagsChange([])}>
-              清除筛选
-            </Button>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  // 全局图谱虚拟项（置顶，不可删除/重命名）
-  const renderGlobalItem = () => {
-    const isSelected = selectedId === GLOBAL_ID;
-    return (
-      <List.Item
-        onClick={() => onSelect(GLOBAL_ID)}
-        style={{
-          cursor: "pointer",
-          background: isSelected ? "#e6f7ff" : "#fafafa",
-          borderLeft: isSelected ? "3px solid #1890ff" : "3px solid #1890ff",
-          padding: "8px 12px",
-          borderBottom: "1px solid #f0f0f0",
-        }}
-      >
-        <div style={{ width: "100%" }}>
-          <div style={{ marginBottom: 4 }}>
-            <GlobalOutlined style={{ marginRight: 4, color: "#1890ff" }} />
-            <Text strong style={{ fontSize: 13 }}>全局图谱</Text>
-            <Tag color="blue" style={{ marginLeft: 6, fontSize: 10 }}>置顶</Tag>
-          </div>
-          {(tableCount !== undefined || edgeCount !== undefined) && (
-            <div>
-              {tableCount !== undefined && <Tag color="green" style={{ fontSize: 11 }}>{tableCount} 张表</Tag>}
-              {edgeCount !== undefined && <Tag color="blue" style={{ fontSize: 11 }}>{edgeCount} 条血缘</Tag>}
-            </div>
-          )}
-        </div>
-      </List.Item>
     );
   };
 
@@ -227,40 +136,6 @@ const ScriptList: React.FC<Props> = ({
       style={{ height: "100%", overflow: "auto" }}
       styles={{ body: { padding: 0 } }}
     >
-      {/* 标签筛选器：仅在全局视图生效，单脚本视图灰显 */}
-      {showTagFilter && tagSchema.dimensions.length > 0 && (
-        <div
-          style={{
-            padding: "8px 12px",
-            borderBottom: "1px solid #f0f0f0",
-            background: "#fafafa",
-            opacity: isGlobalView ? 1 : 0.5,
-          }}
-          title={isGlobalView ? undefined : "切换到全局视图后生效"}
-        >
-          <Popover content={renderFilterContent()} trigger="click" placement="bottomLeft">
-            <Button size="small" icon={<FilterOutlined />} style={{ width: "100%", justifyContent: "flex-start" }}>
-              标签筛选{selectedTags.length > 0 ? ` (${selectedTags.length})` : ""}
-            </Button>
-          </Popover>
-          {selectedTags.length > 0 && (
-            <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 2 }}>
-              {selectedTags.map((t) => (
-                <Tag
-                  key={t}
-                  color="purple"
-                  closable
-                  onClose={() => toggleFilterTag(t)}
-                  style={{ fontSize: 10, margin: 0 }}
-                >
-                  {t}
-                </Tag>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* 批量打标操作栏（仅批量模式显示） */}
       {batchMode && (
         <div style={{ padding: "8px 12px", borderBottom: "1px solid #f0f0f0", background: "#e6f7ff" }}>
@@ -277,9 +152,6 @@ const ScriptList: React.FC<Props> = ({
         </div>
       )}
 
-      {/* 全局图谱虚拟项（始终置顶；脚本管理弹窗内不显示） */}
-      {showGlobalItem && renderGlobalItem()}
-
       {scripts.length === 0 ? (
         <Empty description="暂无脚本" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ marginTop: 40 }} />
       ) : (
@@ -287,12 +159,7 @@ const ScriptList: React.FC<Props> = ({
           size="small"
           dataSource={scripts}
           renderItem={(item) => {
-            const isSelected = selectedId === item.analysis_id;
             const isEditing = editingId === item.analysis_id;
-            // 筛选命中判断：全局视图 + 有筛选条件时，未命中的灰显（不隐藏）
-            const hasFilter = isGlobalView && selectedTags.length > 0;
-            const isHit = hitScriptIds.has(item.analysis_id);
-            const dimmed = hasFilter && !isHit;
 
             // 批量模式：每项前加 Checkbox
             const batchCheckbox = batchMode ? (
@@ -306,14 +173,9 @@ const ScriptList: React.FC<Props> = ({
 
             return (
               <List.Item
-                onClick={() => !isEditing && !batchMode && onSelect(item.analysis_id)}
                 style={{
-                  cursor: isEditing || batchMode ? "default" : "pointer",
-                  background: isSelected ? "#e6f7ff" : undefined,
-                  borderLeft: isSelected ? "3px solid #1890ff" : "3px solid transparent",
+                  cursor: isEditing || batchMode ? "default" : "default",
                   padding: "8px 12px",
-                  opacity: dimmed ? 0.4 : 1,
-                  transition: "background 0.2s, opacity 0.2s",
                 }}
                 actions={
                   batchMode || isEditing
