@@ -197,6 +197,15 @@ async def get_tables():
     return store.get_tables()
 
 
+@router.get("/column-mappings")
+async def get_column_mappings():
+    """聚合所有脚本的列级血缘映射（全局 edges 不含列级，需从各脚本汇总）。
+
+    供前端「列级追溯」视图在客户端做按列的递归上游追溯。
+    """
+    return store.get_column_mappings()
+
+
 # === 全局参数映射 ===
 
 @router.get("/param-mapping")

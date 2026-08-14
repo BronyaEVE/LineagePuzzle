@@ -16,9 +16,11 @@ import os
 import re
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import networkx as nx
 from filelock import FileLock
 
 from ..models.analysis import AnalysisResult, GlobalEdge, GlobalGraph, ScriptSummary, VisNode
@@ -129,6 +131,78 @@ def _append_edge(edge: dict):
 
 
 # ============================================================
+# 全局图谱内存缓存（实体为中心：表节点 + 有向血缘边，双向邻接）
+# ------------------------------------------------------------
+# 设计：tables.json（表实体）+ edges.jsonl（有向血缘边，携带 script 溯源
+# 与 column_mappings）是血缘的唯一真相源；启动/变更时构建内存缓存，
+# 上游/下游邻接成为 O(1) 查询（下游追溯不再每次重建图）。脚本降级为
+# 边的溯源来源 + 管理单元。
+# 一致性：所有写操作在 _store_lock 内持久化后调用 _refresh_cache 重建；
+# 读操作无锁读取缓存指针（Python 模块级赋值原子，看到的是完整的新或旧缓存）。
+# ============================================================
+
+
+@dataclass
+class _GraphCache:
+    """实体图内存缓存：边列表 + 表元数据 + networkx 有向图 + 角色集合。"""
+    edges: list[dict]
+    tables: dict
+    graph: nx.DiGraph
+    sources: set[str]
+    targets: set[str]
+
+
+# 模块级缓存；None 表示尚未构建（首次读懒构建 / 启动预热）。
+_CACHE: _GraphCache | None = None
+
+
+def _build_cache() -> _GraphCache:
+    """从 tables.json + edges.jsonl 构建内存缓存。
+
+    不加锁：调用方已持锁（写路径），或允许并发幂等构建（读懒触发）。
+    """
+    tables = _read_json(TABLES_FILE, {})
+    edges = _read_edges()
+    G = nx.DiGraph()
+    sources: set[str] = set()
+    targets: set[str] = set()
+    for e in edges:
+        src = e.get("source", "")
+        tgt = e.get("target", "")
+        if src and tgt:
+            G.add_edge(
+                src, tgt,
+                operation=e.get("operation", ""),
+                script_id=e.get("script_id", ""),
+                statement_seq=e.get("statement_seq", 0),
+            )
+            sources.add(src)
+            targets.add(tgt)
+    return _GraphCache(edges=edges, tables=tables, graph=G, sources=sources, targets=targets)
+
+
+def _get_cache() -> _GraphCache:
+    """返回图缓存；未构建则在锁内懒构建（首次读触发）。"""
+    global _CACHE
+    if _CACHE is None:
+        with _store_lock():
+            if _CACHE is None:
+                _CACHE = _build_cache()
+    return _CACHE
+
+
+def _refresh_cache() -> None:
+    """写操作后重建缓存并原子替换指针。调用方必须已持有 _store_lock。"""
+    global _CACHE
+    _CACHE = _build_cache()
+
+
+def warm_cache() -> None:
+    """启动时预热图缓存（可选；首次读也会懒构建）。"""
+    _get_cache()
+
+
+# ============================================================
 # 脚本管理（所有写操作均在 _store_lock 保护下）
 # ============================================================
 
@@ -143,8 +217,14 @@ def save_script(result: AnalysisResult) -> AnalysisResult:
         if not result.name:
             result.name = f"脚本_{result.created_at.strftime('%m%d_%H%M')}"
 
-        # 保存单个脚本文件
         script_path = SCRIPTS_DIR / f"{result.analysis_id}.json"
+        # 幂等保护：同 analysis_id 已存在时先清旧边/旧表引用（正常流程每次新 uuid，
+        # 不会命中；防御重复保存导致 edges.jsonl 出现重复边）
+        if script_path.exists():
+            _remove_edges_for_script(result.analysis_id)
+            _remove_script_from_tables(result.analysis_id)
+
+        # 保存单个脚本文件
         _write_json(script_path, result.model_dump())
 
         # 更新全局表（带 script_ids 反向索引）
@@ -152,6 +232,9 @@ def save_script(result: AnalysisResult) -> AnalysisResult:
 
         # 追加边到 edges.jsonl（O(1) 追加，不读不重写）
         _append_edges_for_script(result)
+
+        # 实体图已变，重建内存缓存
+        _refresh_cache()
 
     return result
 
@@ -220,6 +303,9 @@ def delete_script(script_id: str) -> bool:
         # 全表扫清理：移除 script_id 引用，孤立表删除
         _remove_script_from_tables(script_id)
 
+        # 实体图已变，重建内存缓存
+        _refresh_cache()
+
     return True
 
 
@@ -260,6 +346,7 @@ def replace_script_edges(result: AnalysisResult) -> AnalysisResult:
         _write_json(script_path, result.model_dump())
         _merge_tables(result)
         _append_edges_for_script(result)
+        _refresh_cache()
     return result
 
 
@@ -268,18 +355,12 @@ def replace_script_edges(result: AnalysisResult) -> AnalysisResult:
 # ============================================================
 
 def get_global_graph() -> GlobalGraph:
-    """返回累积的全局血缘图谱。"""
-    tables = _read_json(TABLES_FILE, {})
-    edges = _read_edges()
-
-    # 根据边判断节点角色
-    sources = {e["source"] for e in edges}
-    targets = {e["target"] for e in edges}
-
+    """返回累积的全局血缘图谱（从内存缓存组装，不再每次读文件）。"""
+    c = _get_cache()
     nodes = []
-    for name, info in tables.items():
-        is_src = name in sources
-        is_tgt = name in targets
+    for name, info in c.tables.items():
+        is_src = name in c.sources
+        is_tgt = name in c.targets
         if is_src and is_tgt:
             ntype = "intermediate"
         elif is_src:
@@ -289,14 +370,56 @@ def get_global_graph() -> GlobalGraph:
         else:
             ntype = info.get("type", "source")
         nodes.append(VisNode(id=name, label=name, type=ntype))
-
-    ge = [GlobalEdge(**e) for e in edges]
+    ge = [GlobalEdge(**e) for e in c.edges]
     return GlobalGraph(nodes=nodes, edges=ge)
 
 
 def get_tables() -> dict:
     """返回全局表注册表。"""
     return _read_json(TABLES_FILE, {})
+
+
+def get_column_mappings() -> list[dict]:
+    """聚合列级血缘映射，供「列级追溯」视图使用。
+
+    真相源是 edges.jsonl：每条边携带 column_mappings（见 _append_edges_for_script）。
+    一条语句的 column_mappings 会被挂到该语句的全部交叉积边上，因此这里按
+    (script_id, statement_seq, 列映射内容) 去重，还原「每条语句一组列映射」。
+
+    每条：{target_table, target_column, source_table, source_columns, transformation, script_id, statement_seq}
+    """
+    c = _get_cache()
+    seen: set = set()
+    mappings: list[dict] = []
+    for e in c.edges:
+        script_id = e.get("script_id", "")
+        seq = e.get("statement_seq")
+        for m in e.get("column_mappings") or []:
+            if not isinstance(m, dict):
+                continue
+            src_cols = m.get("source_columns", [])
+            key = (
+                script_id, seq,
+                m.get("target_table"), m.get("target_column"),
+                m.get("source_table", ""),
+                tuple(src_cols) if isinstance(src_cols, list) else tuple(),
+                m.get("transformation"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            mappings.append(
+                {
+                    "target_table": m.get("target_table"),
+                    "target_column": m.get("target_column"),
+                    "source_table": m.get("source_table", ""),
+                    "source_columns": src_cols if isinstance(src_cols, list) else [],
+                    "transformation": m.get("transformation"),
+                    "script_id": script_id,
+                    "statement_seq": seq,
+                }
+            )
+    return mappings
 
 
 # ============================================================
@@ -633,29 +756,20 @@ def import_all(payload: dict) -> None:
         # tag_schema（兼容旧版：无此字段时写空 schema）
         _write_json(TAG_SCHEMA_FILE, payload.get("tag_schema", {"dimensions": []}))
 
+        # tables/edges 已被整体替换，重建内存缓存
+        _refresh_cache()
+
 
 # ============================================================
 # 影响分析（基于 networkx 内存图，存储仍是 JSON）
 # ============================================================
 
-def build_graph():
-    """从 edges.jsonl 构建 networkx 有向图。
+def build_graph() -> nx.DiGraph:
+    """返回缓存的 networkx 有向图（实体图缓存的一部分）。
 
-    每次调用都从存储重新构建（数据量小，O(n) 即可）。
-    边的属性携带 operation / script_id / statement_seq 供后续分析。
+    旧版每次调用从 edges.jsonl 重建；现在复用内存缓存，下游/上游邻接为 O(1)。
     """
-    import networkx as nx
-
-    G = nx.DiGraph()
-    for e in _read_edges():
-        src = e.get("source", "")
-        tgt = e.get("target", "")
-        if src and tgt:
-            G.add_edge(src, tgt,
-                       operation=e.get("operation", ""),
-                       script_id=e.get("script_id", ""),
-                       statement_seq=e.get("statement_seq", 0))
-    return G
+    return _get_cache().graph
 
 
 def impact_analysis(table: str) -> dict:
@@ -679,13 +793,11 @@ def impact_analysis(table: str) -> dict:
       3. has_cycle 时降级 shortest_path（环上 all_simple_paths 会无限循环）
     实测：真实 4 层数仓单源最大 5 条路径；病态宽5深5网格 125 条仍 <2ms。
     """
-    import networkx as nx
-
     # 路径爆炸防护参数
     MAX_PATH_DEPTH = 8       # 单条路径最大深度（边数），覆盖 ODS→DWD→DWS→ADS 等真实场景
     MAX_PATHS_PER_PAIR = 200  # 单个 (src,tgt) 对的最大路径数，超过则截断并标记
 
-    G = build_graph()
+    G = _get_cache().graph
     # 对输入表名做归一化（图里的节点是 normalize 后的全限定名，含大小写折叠）
     table = normalize_table_name(table)
     if table not in G:

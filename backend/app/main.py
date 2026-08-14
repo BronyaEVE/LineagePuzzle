@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -6,8 +7,17 @@ from fastapi.staticfiles import StaticFiles
 
 from .api.analyze import router as analyze_router
 from .config import settings
+from .services import store
 
-app = FastAPI(title=settings.app_name, debug=settings.debug)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动预热实体图缓存：首次请求即可 O(1) 查询上下游
+    store.warm_cache()
+    yield
+
+
+app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
