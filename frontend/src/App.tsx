@@ -18,7 +18,6 @@ import {
   renameScript, getGlobalGraph, getPreprocessRules, setPreprocessRules,
   exportData, importData,
   getTagSchema, setTagSchema as apiSetTagSchema,
-  setScriptTags as apiSetScriptTags, batchSetScriptTags,
 } from "./api/client";
 import type {
   DatabaseConfig as DatabaseConfigType,
@@ -168,33 +167,8 @@ function App() {
     }
   };
 
-  // === 标签：单个脚本打标 ===
-  const handleSetScriptTags = async (id: string, tags: string[]) => {
-    try {
-      await apiSetScriptTags(id, tags);
-      // 本地更新 scripts 的 tags（避免整页 refresh）
-      setScripts((prev) => prev.map((s) => s.analysis_id === id ? { ...s, tags } : s));
-    } catch (e: unknown) {
-      message.error(errMsg(e, "打标签失败"));
-    }
-  };
-
-  // === 标签：批量打标 ===
-  const handleBatchSetTags = async (ids: string[], tags: string[]) => {
-    try {
-      const result = await batchSetScriptTags(ids, tags);
-      // 本地更新命中的脚本 tags
-      const updatedSet = new Set(result.updated);
-      setScripts((prev) => prev.map((s) => updatedSet.has(s.analysis_id) ? { ...s, tags } : s));
-      if (result.failed.length > 0) {
-        message.warning(`${result.updated.length} 个成功，${result.failed.length} 个失败`);
-      } else {
-        message.success(`已为 ${result.updated.length} 个脚本打标`);
-      }
-    } catch (e: unknown) {
-      message.error(errMsg(e, "批量打标失败"));
-    }
-  };
+  // （打标 UI 已从脚本管理弹窗移除：标签仅在批量导入时指定，
+  //   表列表的标签筛选消费导入时打的标签；后端打标 API 保留）
 
   // isGlobalView：未选表且显式打开全局（全局图谱已降级为非默认视图）
   const isGlobalView = selectedTables.length === 0 && showGlobal === true;
@@ -687,9 +661,6 @@ function App() {
         scripts={scripts}
         onDelete={handleDelete}
         onRename={handleRename}
-        tagSchema={tagSchema}
-        onSetScriptTags={handleSetScriptTags}
-        onBatchSetTags={handleBatchSetTags}
       />
     </ConfigProvider>
   );
