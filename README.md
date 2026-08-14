@@ -5,9 +5,9 @@
 
 **简体中文** | [English](./README.en.md)
 
-> 内网环境下零依赖的 SQL 数据血缘可视化工具 —— 粘贴 DML 脚本，自动生成表级 + 列级血缘图谱，像拼图一样逐步还原整个数仓的数据流转。
+> 内网环境下零依赖的 SQL 数据血缘可视化工具 —— 导入 DML 脚本，以**表为中心**导航血缘：表列表选表即看邻域子图与列级追溯，上下游双向查询，像拼图一样逐步还原整个数仓的数据流转。
 
-![全局血缘图谱](docs/images/hero.png)
+![表为中心导航](docs/images/table-view.png)
 
 ---
 
@@ -33,15 +33,17 @@
 
 ## ✨ 核心特性
 
-- **增量构建** —— 每次分析一个脚本，血缘自动累积到全局图谱，无需一次性提交所有脚本
+- **表为中心导航** —— 左栏是表列表（角色徽标 + 上下游计数），点击表即看它的**邻域子图**（上游+下游，1/2/3 跳可选）；**多选表**查看合并邻域，直接回答"这两张表怎么关联"
+- **下游追溯与上游对称** —— 实体图内存缓存双向邻接，"这张表的数据被谁用了"和"从哪来"一样直接
+- **列级追溯（文本树）** —— 选表选列，EXPLAIN 风格递归展示 `目标列 ← 源列` 及变换表达式，复杂列血缘比图更可读
+- **增量构建** —— 每次导入脚本，血缘自动累积到全局图谱，无需一次性提交所有脚本
 - **离线优先** —— 基于 `sqlglot` AST 静态解析，**无需数据库连接** 即可提取完整血缘
-- **表级 + 列级** —— 不仅看表间流转，还能点边查看 `目标列 ← 源列` 及变换表达式（`SUM(amount)`、`price*qty`）
 - **影响分析** —— 点击节点，高亮其全部上游链路（青色）和下游链路（橙色），菱形依赖完整覆盖
-- **节点折叠** —— 复杂图谱里点节点边缘的 +/- 按钮折叠/展开上游或下游链路，专注看局部
-- **标签筛选** —— 给脚本打扁平多维度标签（如 `[C层, 个人借据]`），全局画布按标签筛选只显示命中脚本贡献的血缘，类似 Excel 筛选
-- **参数化 SQL** —— 支持 ETL 模板占位符 `${icl_schema}`，配合「预处理规则」替换成实际 schema（参数映射为内置规则特例）
+- **脚本收拢为管理单元** —— 上传/重命名/删除/打标收进「脚本管理」弹窗；从表详情下钻查看"读写该表的脚本"及其语句
+- **标签筛选** —— 脚本标签投影到表，左栏按命中灰显，全局画布按标签过滤血缘切片
+- **参数化 SQL** —— 支持 ETL 模板占位符 `${icl_schema}`，配合「预处理规则」替换成实际 schema
 - **批量导入** —— 一次拖入多个 `.sql` 文件或 `.zip` 压缩包，每个文件成为独立脚本
-- **零安装部署** —— 便携版自带 Python 运行时，目标机双击即用
+- **零安装部署** —— 便携版自带 Python 运行时，目标机双击即用；LAN 共享模式支持可选 API 令牌
 
 ### 截图预览
 
@@ -50,15 +52,15 @@
 
 | | |
 |:---:|:---:|
-| **全局血缘图谱** | **列级血缘映射** |
-| ![全局图谱](docs/images/hero.png) | ![列级映射](docs/images/column-drawer.png) |
-| 全局视图聚合所有脚本，分层血缘流向 | 点边查看 `目标列 ← 源列` 及变换表达式 |
-| **影响分析** | **节点折叠** |
-| ![影响分析](docs/images/impact-analysis.png) | ![节点折叠](docs/images/node-collapse.png) |
-| 点节点：青色 = 上游链路，橙色 = 下游链路 | +/- 按钮折叠/展开上下游链路 |
-| **标签筛选** | **搜索（表名=影响分析）** |
-| ![标签筛选](docs/images/tag-filter.png) | ![搜索](docs/images/search.png) |
-| 按维度筛选命中脚本的血缘切片 | 搜表名触发上下游双色高亮 |
+| **表为中心导航（表列表 + 邻域子图 + 表详情）** | **列级追溯（文本树）** |
+| ![表视图](docs/images/table-view.png) | ![列级追溯](docs/images/column-trace.png) |
+| 左栏表列表，中栏选中表的邻域子图，右栏表详情 + 相关脚本 | 选表选列，递归上游文本树（含变换表达式） |
+| **列级血缘映射（点边）** | **影响分析** |
+| ![列级映射](docs/images/column-drawer.png) | ![影响分析](docs/images/impact-analysis.png) |
+| 点边查看 `目标列 ← 源列` 及变换表达式 | 点节点：青色 = 上游链路，橙色 = 下游链路 |
+| **节点折叠** | **搜索（表名=影响分析）** |
+| ![节点折叠](docs/images/node-collapse.png) | ![搜索](docs/images/search.png) |
+| +/- 按钮折叠/展开上下游链路 | 搜表名直接选中该表并触发双色高亮 |
 | **标签维度定义** | **预处理规则** |
 | ![标签维度](docs/images/tag-schema.png) | ![预处理规则](docs/images/preprocess-rules.png) |
 | 管理员维护维度名 + 标签值 | 正则替换规则；参数映射为内置类型 |
@@ -99,7 +101,7 @@
 
 > **启动/停止机制：** `run.bat` 是薄壳，通过自带的 `pythonw.exe`（无窗口版 Python）调用 `launcher.pyw`。启动器管理 uvicorn 子进程生命周期：PID 写入 `logs/lineage.pid`，uvicorn 输出重定向到 `logs/lineage.log`，启动器自身日志在 `logs/launcher.log`。服务运行中再双击 `run.bat` 只会重新打开浏览器（不会重复启动）。`stop.bat` 优先按 PID 文件停止，PID 文件失效时（比如硬关电脑后）按端口 8000 查监听进程兜底。
 
-> 让同事访问？服务默认监听 `0.0.0.0:8000`，同事用 `http://你的IP:8000` 即可访问。拷贝 `app/data/` 给他，他启动后能看到相同的全局图谱。
+> 让同事访问？服务默认监听 `0.0.0.0:8000`，同事用 `http://你的IP:8000` 即可访问。拷贝 `app/data/` 给他，他启动后能看到相同的全局图谱。**安全提示**：launcher 默认启用一次性 API 令牌（浏览器自动打开带 `?token=` 的 URL），给同事的共享链接在 `logs/launcher.log` 里；隔离单机环境可用 `LINEAGE_TOKEN=off` 关闭。详见 [docs/SECURITY.md](docs/SECURITY.md)。
 
 ### 方式 C：从源码构建（开发者）
 
@@ -127,7 +129,7 @@ INSERT INTO order_report (order_id, amount, customer_name)
 SELECT id, amount * 1.1, name FROM tmp_detail;
 ```
 
-点「分析血缘」—— 你会看到 `orders`、`customers`（绿）→ `tmp_detail`（黄）→ `order_report`（蓝）的血缘链路。再点任意一条边，右侧弹出列级映射。
+点「分析血缘」后，左栏表列表会出现 `orders`、`customers`（绿）→ `tmp_detail`（黄）→ `order_report`（蓝）。**点击 `order_report`** —— 中栏显示它的邻域子图（可切 1/2/3 跳，可多选表合并查看），右栏显示角色/上下游计数和"读写该表的脚本"（点击下钻语句）。切到「列级追溯」标签选列，可看递归上游文本树。全局图谱仍是置顶入口，但大图下不再是默认视图（发面饼不可读，子图才是答案）。
 
 **一体化部署**（生产，单端口）：
 
@@ -159,6 +161,25 @@ pack_desktop.bat    # 产出 dist/LineagePuzzle/（约 200MB，PyInstaller onedi
 
 ## 📖 功能一览
 
+### 表为中心导航（默认工作流）
+
+- **左栏表列表**：搜索 + 角色徽标（源/中间/目标）+ 直接上下游计数；标签筛选按"命中脚本读写的表"灰显
+- **中栏邻域子图**：单表 = 上游+下游 N 跳子图；**多选 = 合并邻域**（表间关联直接可见，选中表蓝框强调）；全局图谱为置顶的非默认入口（小图默认全局，大图默认空态）
+- **右栏表详情**：角色、上下游计数、**相关脚本**（由边的 script 溯源汇总，点击 Drawer 查看语句分段）
+
+### 列级追溯（文本树）
+
+切到「列级追溯」标签，选表选列，递归展开上游列（含环检测）：
+
+```
+edwicl_data.acct_fact_0001.id
+  ← edwicl_data.acct_stg4_tmp_0001.id
+    ← edwicl_data.acct_stg3_tmp_0001.id
+      ← ... ← edwiol_data.cust_label.id（原始列）
+```
+
+复杂列血缘下文本树比图可读得多；与"点边看映射"互补（后者看单条边，前者看整条链）。
+
 ### 列级血缘（点边查看）
 
 点击图中任意一条边，右侧 Drawer 展示该边的列级映射：
@@ -171,16 +192,18 @@ public.orders → public.order_report   操作：INSERT   语句 #1
 [customer_name] ← [public.customers.name]
 ```
 
-![列级血缘 Drawer](docs/images/column-drawer.png)
-
 支持：显式列映射、JOIN+别名、聚合（`SUM`/`COUNT`）、表达式（`price*qty`）、CTAS、UPDATE SET、**派生表穿透**（子查询列追溯到物理表）。`SELECT *` 因无表结构降级为表级（边仍正常生成）。
 
 ### 影响分析（点节点高亮链路）
 
-点击节点，高亮其**全部**上下游链路（基于 `all_simple_paths`，菱形依赖 `A→B→C` 且 `A→C` 时三条边全亮）：
+点击节点，高亮其**全部**上下游链路（基于内存图缓存的 `all_simple_paths`，菱形依赖完整覆盖）：
 
-- 🔵 下游（改这张表会影响谁）—— 橙色高亮
+- 🔽 下游（改这张表会影响谁）—— 橙色高亮
 - 🔼 上游（这张表的数据来自谁）—— 青色高亮
+
+### 脚本管理（弹窗）
+
+脚本不再是导航单元：上传、重命名、删除、单条/批量打标收进顶栏「脚本管理」弹窗；日常查血缘从表出发，脚本作为边的溯源信息从表详情下钻。
 
 ### 批量导入
 
@@ -188,7 +211,7 @@ public.orders → public.order_report   操作：INSERT   语句 #1
 
 ### 其他
 
-- **搜索框**：模糊匹配表名/字段名。搜表名触发影响分析（与点节点同效果）；搜字段高亮该字段流转经过的所有边。重复搜同一目标也会重新聚焦
+- **搜索框**：模糊匹配表名/字段名。搜表名直接选中该表（进入邻域子图）；搜字段高亮该字段流转经过的所有边
 - **预处理规则**：配置正则替换规则（name/pattern/replacement/enabled），应对各种奇怪 SQL 格式；参数映射为内置规则特例（id 以 `param-` 前缀），分析时自动应用
 - **导入/导出**：一键备份/迁移全部血缘数据（JSON）
 - **图导出**：导出当前图谱为 PNG / 独立 HTML
@@ -205,8 +228,8 @@ public.orders → public.order_report   操作：INSERT   语句 #1
 | 后端 | Python FastAPI + Pydantic |
 | SQL 解析 | sqlglot（AST 静态解析，唯一血缘来源） |
 | 图算法 | networkx（影响分析的最短/全路径、环检测） |
-| 存储 | JSON / JSONL + filelock（无数据库依赖） |
-| 部署 | Python embeddable（便携版零安装） |
+| 存储 | JSON / JSONL + filelock（无数据库依赖）；实体图内存缓存（双向邻接） |
+| 部署 | Python embeddable（便携版零安装）；LAN 模式可选 API 令牌 |
 
 ---
 
@@ -216,11 +239,11 @@ public.orders → public.order_report   操作：INSERT   语句 #1
 datalineage_visualizer/
 ├── backend/
 │   ├── app/
-│   │   ├── api/           # FastAPI 路由（21 个 REST 端点）
-│   │   ├── services/      # 血缘提取、存储、预处理规则（核心逻辑）
+│   │   ├── api/           # FastAPI 路由（16 个 REST 端点）
+│   │   ├── services/      # 血缘提取、存储（实体图缓存）、预处理规则
 │   │   ├── models/        # Pydantic 数据模型
-│   │   └── main.py        # FastAPI 应用 + 静态文件托管
-│   ├── tests/             # 292 个测试（覆盖率 93%）
+│   │   └── main.py        # FastAPI 应用 + 令牌鉴权 + GZip + 静态托管
+│   ├── tests/             # 283 个测试
 │   └── requirements.txt   # 9 个核心依赖
 ├── frontend/
 │   └── src/
@@ -243,24 +266,24 @@ datalineage_visualizer/
 ## 📊 测试
 
 ```bash
-cd backend && python -m pytest    # 292 passed, 覆盖率 93%
+cd backend && python -m pytest    # 283 passed
 ```
 
 测试文件（11 个文件，覆盖全部层）：
 
-| 文件 | 测试数 | 覆盖范围 |
-|------|--------|---------|
-| `test_preprocessor` | 33 | 去注释、DO block 提取、事务补分号、预处理规则 |
-| `test_param_mapping` | 30 | 参数替换、预处理规则 CRUD、自动迁移 |
-| `test_splitter` | 28 | 语句拆分、类型检测、事务块 |
-| `test_api` | 55 | 全部 21 个 REST 端点（TestClient 端到端）、标签端点、批量带标签 |
-| `test_store` | 51 | 持久化、影响分析、导入导出、路径遍历防护、标签维度+打标 |
-| `test_lineage_e2e` | 15 | 端到端血缘：CASE WHEN、DO block、跨 schema、事务 |
-| `test_lineage_extractor` | 18 | 表级血缘提取、多源 JOIN、临时表链路 |
-| `test_column_lineage` | 18 | 列级映射、子查询穿透、UPDATE 血缘 |
-| `test_normalize` | 15 | 表名归一化、大小写折叠（PostgreSQL 语义） |
-| `test_impact_analysis` | 14 | all_simple_paths、菱形依赖、路径爆炸防护 |
-| `test_analyzer` | 4 | 离线模式、DB 降级 |
+| 文件 | 覆盖范围 |
+|------|---------|
+| `test_preprocessor` | 去注释、DO block 提取、事务补分号、预处理规则 |
+| `test_param_mapping` | 参数替换、预处理规则 CRUD、自动迁移 |
+| `test_splitter` | 语句拆分、类型检测、事务块 |
+| `test_api` | 全部 REST 端点（TestClient 端到端）、导入路径穿越防护、标签端点 |
+| `test_store` | 持久化、影响分析、导入导出、路径遍历防护、标签维度+打标、缓存一致性 |
+| `test_lineage_e2e` | 端到端血缘：CASE WHEN、DO block、跨 schema、事务 |
+| `test_lineage_extractor` | 表级血缘提取、多源 JOIN、临时表链路 |
+| `test_column_lineage` | 列级映射、子查询穿透、UPDATE 血缘 |
+| `test_normalize` | 表名归一化、大小写折叠（PostgreSQL 语义） |
+| `test_impact_analysis` | all_simple_paths、菱形依赖、路径爆炸防护 |
+| `test_analyzer` | 离线模式、DB 降级 |
 
 ---
 

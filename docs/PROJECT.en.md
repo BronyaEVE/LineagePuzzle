@@ -395,21 +395,28 @@ All endpoints are prefixed with `/api`. Swagger UI: `http://localhost:8000/docs`
 | `/scripts/{id}/name` | PUT | Rename |
 | `/scripts/{id}/tags` | PUT | Set a script's tags (full replacement; `tags: string[]`) |
 | `/scripts/batch-tags` | POST | Batch-set the same tags on multiple scripts (`{script_ids, tags}`) |
-| `/scripts/{id}/statements` | GET | Statement segments |
-| `/scripts/{id}/statements/{seq}` | PUT | Correct a statement's parse result |
 
 ### Global Data
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/global-graph` | GET | Global graph (with column_mappings) |
-| `/tables` | GET | Global table registry |
+| `/global-graph` | GET | Global graph (with column_mappings; served from the entity-graph in-memory cache) |
+| `/column-mappings` | GET | Aggregated column-level mappings (edges as source of truth, deduped per statement; powers the column trace view) |
 | `/tag-schema` | GET / PUT | Tag dimension definitions (`{dimensions: [{name, values}]}`); empty by default, admin-maintained |
 | `/preprocess-rules` | GET / PUT | Preprocess rules (regex replacement rules; param mapping is a built-in type) |
-| `/param-mapping` | GET / PUT | *(legacy, backward-compat alias of /preprocess-rules)* |
 | `/export` | GET | Export all data (includes `tag_schema`) |
-| `/import` | POST | Import data (overwrites) |
+| `/import` | POST | Import data (overwrites; `scripts` keys validated against a whitelist to prevent path traversal) |
 | `/health` | GET | Health check |
+
+> **Removed endpoints** (2026-08 table-centric pivot): `GET /tables` (superseded by
+> `/global-graph`), `GET/PUT /param-mapping` (superseded by `/preprocess-rules`),
+> and `GET /scripts/{id}/statements` + `PUT /scripts/{id}/statements/{seq}`
+> (statement correction had no UI path; removed with the script view). The export
+> file's `param_mapping` field is kept for backward compatibility.
+>
+> **Optional auth**: set the `LINEAGE_TOKEN` env var to require `?token=` or a
+> Bearer header on all `/api/*` requests; the portable launcher auto-generates
+> one and opens a tokenized URL. See [SECURITY.md](./SECURITY.md).
 
 ---
 
