@@ -1,26 +1,28 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { ConfigProvider, Layout, Button, Modal, message, Tag, Space, Popconfirm, Segmented } from "antd";
-import { PlusOutlined, SettingOutlined, DownloadOutlined, UploadOutlined, TagsOutlined } from "@ant-design/icons";
-import ScriptList from "./components/ScriptList";
+import { PlusOutlined, SettingOutlined, DownloadOutlined, UploadOutlined, TagsOutlined, FolderOpenOutlined } from "@ant-design/icons";
+import TableList from "./components/TableList";
+import TableDetail from "./components/TableDetail";
+import ScriptManagerModal from "./components/ScriptManagerModal";
 import ScriptEditor from "./components/ScriptEditor";
 import DatabaseConfigForm from "./components/DatabaseConfig";
-import StatementPanel from "./components/StatementPanel";
 import LineageGraph from "./components/LineageGraph";
 import type { FocusTarget } from "./components/LineageGraph";
+import ColumnTrace from "./components/ColumnTrace";
 import SearchBox, { type SearchTarget } from "./components/SearchBox";
 import PreprocessRulesConfig from "./components/PreprocessRulesConfig";
 import TagSchemaConfig from "./components/TagSchemaConfig";
 import BatchImport from "./components/BatchImport";
 import {
-  submitAnalysis, listScripts, getScript, deleteScript,
+  submitAnalysis, listScripts, deleteScript,
   renameScript, getGlobalGraph, getPreprocessRules, setPreprocessRules,
   exportData, importData,
   getTagSchema, setTagSchema as apiSetTagSchema,
   setScriptTags as apiSetScriptTags, batchSetScriptTags,
 } from "./api/client";
 import type {
-  DatabaseConfig as DatabaseConfigType, AnalysisResult,
-  ScriptSummary, GlobalGraph, PreprocessRule,
+  DatabaseConfig as DatabaseConfigType,
+  ScriptSummary, GlobalGraph, PreprocessRule, GlobalEdge, Visualization,
   TagSchema, TagDimension,
 } from "./types";
 import { GLOBAL_ID } from "./types";
@@ -36,12 +38,18 @@ function App() {
   // === 状态 ===
   const [scripts, setScripts] = useState<ScriptSummary[]>([]);
   const [globalGraph, setGlobalGraph] = useState<GlobalGraph | null>(null);
-  const [selectedScriptId, setSelectedScriptId] = useState<string>(GLOBAL_ID);
-  const [selectedResult, setSelectedResult] = useState<AnalysisResult | null>(null);
+  // 表为中心导航：选中表（GLOBAL_ID = 全局视图）。脚本不再是导航单元。
+  const [selectedTable, setSelectedTable] = useState<string>(GLOBAL_ID);
+  // 表邻域子图深度（跳数）
+  const [subgraphDepth, setSubgraphDepth] = useState<number>(2);
   const [highlightSeq, setHighlightSeq] = useState<number | null>(null);
+  // 脚本管理弹窗（上传/重命名/删除/打标的归置地）
+  const [scriptMgrOpen, setScriptMgrOpen] = useState(false);
 
   // 搜索框选中后聚焦目标（传给 LineageGraph 执行 fitView + 高亮）
   const [focusTarget, setFocusTarget] = useState<FocusTarget | null>(null);
+  // 中栏视图：血缘图（节点-连线）/ 列级追溯（文本树，question-driven）
+  const [view, setView] = useState<"graph" | "trace">("graph");
   const [modalOpen, setModalOpen] = useState(false);
   // 新建分析弹窗的输入模式：手动粘贴 SQL / 批量导入文件
   const [analyzeMode, setAnalyzeMode] = useState<"manual" | "batch">("manual");
@@ -83,38 +91,15 @@ function App() {
 
   useEffect(() => { refreshAll(); }, [refreshAll]);
 
-  // 选中脚本的请求竞态防护：每次点击递增 token，只有最新请求的响应会被采纳
-  const selectTokenRef = useRef(0);
   // 搜索聚焦 token：每次搜索选中递增，附加到 FocusTarget 上保证 effect 重跑，
   // 解决连续两次搜同一目标（值相同）时不重新聚焦的问题。
   const focusTokenRef = useRef(0);
 
-  // === 选中脚本 ===
-  // id 为 GLOBAL_ID 时显示全局图（不拉脚本详情）；否则拉对应脚本。
-  // selectedScriptId 永不为 null：初始值 GLOBAL_ID（全局图）。
-  const handleSelectScript = useCallback(async (id: string) => {
-    const targetId = id || GLOBAL_ID; // 兜底：旧调用传 null 时当全局
-    setSelectedScriptId(targetId);
+  // === 选中表（主导航动作）===
+  const handleSelectTable = useCallback((id: string) => {
+    setSelectedTable(id || GLOBAL_ID);
     setHighlightSeq(null);
     setFocusTarget(null);
-    // 立即清空旧结果，避免切换过程中显示上一个脚本的数据（视觉错乱）
-    setSelectedResult(null);
-    if (targetId === GLOBAL_ID) {
-      return; // 全局图不需要拉脚本详情
-    }
-    const myToken = ++selectTokenRef.current;
-    try {
-      const result = await getScript(targetId);
-      // 过期响应丢弃：用户可能已点了另一个脚本
-      if (myToken !== selectTokenRef.current) return;
-      setSelectedResult(result);
-    } catch (e: unknown) {
-      if (myToken !== selectTokenRef.current) return;
-      const msg = e instanceof Error ? e.message : "加载脚本失败";
-      message.error(msg);
-      // 加载失败，回滚到全局图
-      setSelectedScriptId(GLOBAL_ID);
-    }
   }, []);
 
   // === 新建分析 ===
@@ -148,10 +133,6 @@ function App() {
     try {
       await deleteScript(id);
       message.success("已删除");
-      if (selectedScriptId === id) {
-        setSelectedScriptId(GLOBAL_ID);
-        setSelectedResult(null);
-      }
       await refreshAll();
     } catch (e: unknown) {
       message.error(errMsg(e, "删除脚本失败"));
@@ -196,15 +177,15 @@ function App() {
     }
   };
 
-  // isGlobalView 提前定义（hitScriptIds 和后续 JSX 都依赖它）
-  const isGlobalView = selectedScriptId === GLOBAL_ID;
+  // isGlobalView：未选表（全局图谱视图）
+  const isGlobalView = selectedTable === GLOBAL_ID;
 
   // 筛选命中脚本 id 集合（语义丙：维度内 OR、维度间 AND）。
-  // 仅在全局视图且有筛选标签时计算；无筛选时返回空 Set（调用方据此判断「不筛选」）。
+  // 有筛选标签时计算；无筛选时返回空 Set（调用方据此判断「不筛选」）。
   // 实现思路：把选中的扁平标签按维度分组（查 tagSchema 得到每个标签所属维度），
   // 对每个维度，脚本须含该维度下任意一个选中标签；所有维度都满足才命中。
   const hitScriptIds = useMemo(() => {
-    if (!isGlobalView || selectedTags.length === 0) return new Set<string>();
+    if (selectedTags.length === 0) return new Set<string>();
     // 标签值 → 所属维度名（一个标签值只属一个维度；若跨维度重名，取第一个）
     const tagToDim = new Map<string, string>();
     for (const dim of tagSchema.dimensions) {
@@ -233,7 +214,7 @@ function App() {
       if (allDimsSatisfied) hit.add(s.analysis_id);
     }
     return hit;
-  }, [scripts, selectedTags, tagSchema, isGlobalView]);
+  }, [scripts, selectedTags, tagSchema]);
 
   // === 预处理规则：打开时拉取，保存时推送 ===
   const handleOpenRules = async () => {
@@ -329,19 +310,59 @@ function App() {
   const edgeCount = globalGraph?.edges.length ?? 0;
   const scriptCount = scripts.length;
 
-  // 搜索框的节点/边数据（useMemo 化，避免每次渲染重建数组击穿 SearchBox 内部 useMemo）。
-  // 边加 _edgeId 前缀（e- 脚本视图 / ge- 全局视图），与 LineageGraph 实际渲染的边 id 一致。
-  // isGlobalView 已在前面（hitScriptIds useMemo 前）定义，此处复用。
-  const searchNodes = useMemo(
-    () => (isGlobalView ? globalGraph?.nodes : selectedResult?.visualization.nodes) || [],
-    [isGlobalView, selectedResult, globalGraph],
-  );
+  // === 表邻域子图（选中表时，中栏显示 question-driven 子图而非全局图）===
+  // 客户端 BFS：选中表 + 上游祖先 + 下游后代，限深 subgraphDepth 跳。
+  // 全局边数 ~2.5k，BFS 开销可忽略；复用 LineageGraph 的 visualization 渲染模式。
+  const tableSubgraph = useMemo<Visualization | null>(() => {
+    if (!globalGraph || isGlobalView) return null;
+    const edges = globalGraph.edges as GlobalEdge[];
+    // 邻接表
+    const outMap = new Map<string, GlobalEdge[]>();
+    const inMap = new Map<string, GlobalEdge[]>();
+    for (const e of edges) {
+      let a = outMap.get(e.source); if (!a) { a = []; outMap.set(e.source, a); } a.push(e);
+      let b = inMap.get(e.target); if (!b) { b = []; inMap.set(e.target, b); } b.push(e);
+    }
+    // BFS 收集 depth 跳内的祖先/后代节点
+    const included = new Set<string>([selectedTable]);
+    const bfs = (start: string, map: Map<string, GlobalEdge[]>) => {
+      let frontier = [start];
+      for (let d = 0; d < subgraphDepth && frontier.length > 0; d++) {
+        const next: string[] = [];
+        for (const t of frontier) {
+          for (const e of map.get(t) ?? []) {
+            const n = e.source === t ? e.target : e.source;
+            if (!included.has(n)) { included.add(n); next.push(n); }
+          }
+        }
+        frontier = next;
+      }
+    };
+    bfs(selectedTable, outMap); // 下游
+    bfs(selectedTable, inMap);  // 上游
+    // 节点：从全局图取角色；边：两端都在集合内的全局边（完整展示子图内交叉血缘）
+    const nodeById = new Map(globalGraph.nodes.map((n) => [n.id, n]));
+    const nodes = [...included]
+      .filter((id) => nodeById.has(id))
+      .map((id) => nodeById.get(id)!);
+    const subEdges = edges
+      .filter((e) => included.has(e.source) && included.has(e.target))
+      .map((e) => ({
+        source: e.source,
+        target: e.target,
+        label: e.operation,
+        statement_seq: e.statement_seq,
+        column_mappings: e.column_mappings,
+      }));
+    return { nodes, edges: subEdges };
+  }, [globalGraph, selectedTable, subgraphDepth, isGlobalView]);
+
+  // 搜索框的节点/边数据（始终全局图；表为中心后无单脚本视图）。
+  // 边加 _edgeId 前缀，与 LineageGraph 全局视图渲染的边 id 一致。
+  const searchNodes = useMemo(() => globalGraph?.nodes ?? [], [globalGraph]);
   const searchEdges = useMemo(
-    () =>
-      (isGlobalView
-        ? globalGraph?.edges?.map((e, i) => ({ ...e, _edgeId: `ge-${i}` }))
-        : selectedResult?.visualization.edges?.map((e, i) => ({ ...e, _edgeId: `e-${i}` }))) || [],
-    [isGlobalView, selectedResult, globalGraph],
+    () => globalGraph?.edges?.map((e, i) => ({ ...e, _edgeId: `ge-${i}` })) ?? [],
+    [globalGraph],
   );
 
   return (
@@ -352,6 +373,14 @@ function App() {
             LineagePuzzle
           </div>
           <Space>
+            <Segmented
+              value={view}
+              onChange={(v) => setView(v as "graph" | "trace")}
+              options={[
+                { label: "血缘图", value: "graph" },
+                { label: "列级追溯", value: "trace" },
+              ]}
+            />
             <Button
               icon={<DownloadOutlined />}
               onClick={handleExport}
@@ -418,6 +447,13 @@ function App() {
               标签维度
             </Button>
             <Button
+              icon={<FolderOpenOutlined />}
+              onClick={() => setScriptMgrOpen(true)}
+              style={{ background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,0.3)" }}
+            >
+              脚本管理
+            </Button>
+            <Button
               type="primary"
               icon={<PlusOutlined />}
               onClick={() => setModalOpen(true)}
@@ -429,46 +465,65 @@ function App() {
 
         <Content style={{ padding: 12, background: "#f5f5f5", flex: 1 }}>
           <div style={{ display: "flex", gap: 12, height: "calc(100vh - 100px)" }}>
-            {/* 左栏：脚本列表 */}
-            <div style={{ width: 240, flexShrink: 0 }}>
-              <ScriptList
-                scripts={scripts}
-                selectedId={selectedScriptId}
-                onSelect={handleSelectScript}
-                onDelete={handleDelete}
-                onRename={handleRename}
-                tableCount={tableCount}
-                edgeCount={edgeCount}
+            {/* 左栏：表列表（表为中心导航） */}
+            <div style={{ width: 260, flexShrink: 0 }}>
+              <TableList
+                nodes={globalGraph?.nodes ?? []}
+                edges={globalGraph?.edges ?? []}
+                selectedTable={selectedTable}
+                onSelect={handleSelectTable}
                 tagSchema={tagSchema}
                 selectedTags={selectedTags}
                 onSelectedTagsChange={setSelectedTags}
                 hitScriptIds={hitScriptIds}
-                isGlobalView={isGlobalView}
-                onSetScriptTags={handleSetScriptTags}
-                onBatchSetTags={handleBatchSetTags}
               />
             </div>
 
-            {/* 中栏：全局血缘图 */}
-            <div style={{ flex: 1 }}>
-              <LineageGraph
-                globalGraph={globalGraph}
-                visualization={selectedResult?.visualization ?? null}
-                highlightScriptId={selectedScriptId}
-                highlightSeq={highlightSeq}
-                onEdgeSelectSeq={setHighlightSeq}
-                focusTarget={focusTarget}
-                // 标签筛选：仅全局视图 + 有筛选标签时传命中脚本集合，否则 null（不过滤）
-                tagFilteredScriptIds={isGlobalView && selectedTags.length > 0 ? hitScriptIds : null}
-              />
+            {/* 中栏：血缘图 / 列级追溯（视图切换） */}
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
+              {/* 子图深度选择（仅表视图 + 血缘图模式） */}
+              {!isGlobalView && view === "graph" && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Segmented
+                    size="small"
+                    value={subgraphDepth}
+                    onChange={(v) => setSubgraphDepth(v as number)}
+                    options={[
+                      { label: "1 跳", value: 1 },
+                      { label: "2 跳", value: 2 },
+                      { label: "3 跳", value: 3 },
+                    ]}
+                  />
+                  <span style={{ fontSize: 12, color: "#999" }}>
+                    {selectedTable} 的邻域子图（上游 + 下游）
+                  </span>
+                </div>
+              )}
+              <div style={{ flex: 1, minHeight: 0 }}>
+                {view === "trace" ? (
+                  <ColumnTrace initialTable={isGlobalView ? null : selectedTable} />
+                ) : (
+                  <LineageGraph
+                    globalGraph={globalGraph}
+                    visualization={tableSubgraph}
+                    highlightScriptId={selectedTable}
+                    highlightSeq={highlightSeq}
+                    onEdgeSelectSeq={setHighlightSeq}
+                    focusTarget={focusTarget}
+                    // 标签筛选：仅全局视图 + 有筛选标签时传命中脚本集合，否则 null（不过滤）
+                    tagFilteredScriptIds={isGlobalView && selectedTags.length > 0 ? hitScriptIds : null}
+                  />
+                )}
+              </div>
             </div>
 
-            {/* 右栏：语句分段 */}
+            {/* 右栏：表详情（角色/上下游计数/相关脚本下钻） */}
             <div style={{ width: 320, flexShrink: 0 }}>
-              <StatementPanel
-                statementGroup={selectedResult?.statement_group ?? null}
-                highlightSeq={highlightSeq}
-                onStatementClick={setHighlightSeq}
+              <TableDetail
+                table={isGlobalView ? "" : selectedTable}
+                nodes={globalGraph?.nodes ?? []}
+                edges={globalGraph?.edges ?? []}
+                scripts={scripts}
               />
             </div>
           </div>
@@ -559,6 +614,18 @@ function App() {
       >
         <TagSchemaConfig value={tagSchemaDraft} onChange={setTagSchemaDraft} />
       </Modal>
+
+      {/* 脚本管理弹窗（表为中心改造后：上传/重命名/删除/打标收拢于此） */}
+      <ScriptManagerModal
+        open={scriptMgrOpen}
+        onClose={() => setScriptMgrOpen(false)}
+        scripts={scripts}
+        onDelete={handleDelete}
+        onRename={handleRename}
+        tagSchema={tagSchema}
+        onSetScriptTags={handleSetScriptTags}
+        onBatchSetTags={handleBatchSetTags}
+      />
     </ConfigProvider>
   );
 }

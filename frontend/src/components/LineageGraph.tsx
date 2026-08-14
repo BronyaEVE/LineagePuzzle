@@ -719,7 +719,9 @@ const LineageGraph: React.FC<Props> = ({
       }
       // 全局图：选中脚本时高亮该脚本（script_id）的边，其他灰
       // （方案B后此分支仅在兼容旧逻辑时触发，正常路径下全局视图 highlightScriptId === GLOBAL_ID）
-      if (highlightScriptId !== GLOBAL_ID) {
+      // 表为中心改造后：visualization 模式（脚本图/表邻域子图）的边不带 script_id，
+      // 该分支只在全局视图生效，否则子图边会全部灰显。
+      if (highlightScriptId !== GLOBAL_ID && !visualization?.nodes.length) {
         const sid = (e.data as { script_id?: string } | undefined)?.script_id;
         const hl = sid === highlightScriptId;
         return {
@@ -732,7 +734,7 @@ const LineageGraph: React.FC<Props> = ({
       return { ...e, animated: false, style: { ...e.style, stroke: "#8c8c8c", strokeWidth: 2 },
         labelStyle: { ...e.labelStyle, fill: "#333" } };
     }));
-  }, [visibleEdges, highlightSeq, highlightScriptId, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, hasFieldHighlight, fieldHighlightEdges, setEdges]);
+  }, [visibleEdges, highlightSeq, highlightScriptId, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, hasFieldHighlight, fieldHighlightEdges, visualization, setEdges]);
 
   // 搜索选中后聚焦+高亮（由 App 的 focusTarget 驱动）。
   // 折叠链可能把目标节点隐藏 → fitView 找不到不可见节点会静默失败。

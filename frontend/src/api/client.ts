@@ -1,7 +1,7 @@
 import type {
   AnalysisResult, AnalyzeRequest, DatabaseConfig,
   ScriptSummary, GlobalGraph, ImpactAnalysis, PreprocessRule,
-  TagSchema, BatchSetTagsResult,
+  TagSchema, BatchSetTagsResult, ColumnMappingTrace,
 } from "../types";
 
 const API_BASE = "/api";
@@ -97,6 +97,10 @@ export async function renameScript(id: string, name: string): Promise<void> {
 
 export async function getGlobalGraph(): Promise<GlobalGraph> {
   return request<GlobalGraph>(`${API_BASE}/global-graph`);
+}
+
+export async function getColumnMappings(): Promise<ColumnMappingTrace[]> {
+  return request<ColumnMappingTrace[]>(`${API_BASE}/column-mappings`);
 }
 
 // === 预处理规则（参数映射 + 自定义清洗，统一为正则替换规则）===

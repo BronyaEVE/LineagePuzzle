@@ -31,6 +31,10 @@ interface Props {
   onSetScriptTags: (id: string, tags: string[]) => void;
   /** 批量给多个脚本打同一组标签。 */
   onBatchSetTags: (ids: string[], tags: string[]) => void;
+  /** 是否显示全局图谱虚拟项（左栏 true / 脚本管理弹窗 false）。默认 true。 */
+  showGlobalItem?: boolean;
+  /** 是否显示标签筛选器（筛选已移到表列表，弹窗内 false）。默认 true。 */
+  showTagFilter?: boolean;
 }
 
 const ScriptList: React.FC<Props> = ({
@@ -38,6 +42,7 @@ const ScriptList: React.FC<Props> = ({
   tableCount, edgeCount,
   tagSchema, selectedTags, onSelectedTagsChange, hitScriptIds, isGlobalView,
   onSetScriptTags, onBatchSetTags,
+  showGlobalItem = true, showTagFilter = true,
 }) => {
   const [editingId, setEditingId] = React.useState<string | null>(null);
   const [editName, setEditName] = React.useState("");
@@ -223,7 +228,7 @@ const ScriptList: React.FC<Props> = ({
       styles={{ body: { padding: 0 } }}
     >
       {/* 标签筛选器：仅在全局视图生效，单脚本视图灰显 */}
-      {tagSchema.dimensions.length > 0 && (
+      {showTagFilter && tagSchema.dimensions.length > 0 && (
         <div
           style={{
             padding: "8px 12px",
@@ -272,8 +277,8 @@ const ScriptList: React.FC<Props> = ({
         </div>
       )}
 
-      {/* 全局图谱虚拟项（始终置顶） */}
-      {renderGlobalItem()}
+      {/* 全局图谱虚拟项（始终置顶；脚本管理弹窗内不显示） */}
+      {showGlobalItem && renderGlobalItem()}
 
       {scripts.length === 0 ? (
         <Empty description="暂无脚本" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ marginTop: 40 }} />

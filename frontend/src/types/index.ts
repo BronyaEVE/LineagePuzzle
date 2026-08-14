@@ -84,6 +84,12 @@ export interface ColumnMapping {
   transformation: string | null;  // SUM(x)、price*qty；纯列引用为 null
 }
 
+/** 列级追溯用：ColumnMapping + 来源脚本定位（聚合自全脚本 lineages）。 */
+export interface ColumnMappingTrace extends ColumnMapping {
+  script_id: string;
+  statement_seq: number;
+}
+
 export interface Lineage {
   lineage_id: string;
   source_table: string;
