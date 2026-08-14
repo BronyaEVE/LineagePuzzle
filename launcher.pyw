@@ -20,6 +20,7 @@ logs/lineage.log（uvicorn 输出重定向）。
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 import socket
 import subprocess
@@ -35,11 +36,41 @@ LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / "lineage.log"              # uvicorn stdout/stderr
 LAUNCHER_LOG = LOG_DIR / "launcher.log"         # 启动器自身日志（调试用）
 PID_FILE = LOG_DIR / "lineage.pid"
+TOKEN_FILE = LOG_DIR / "api_token.txt"  # 本次运行的 API 令牌（重复 start 时复用）
 
 HOST = "0.0.0.0"
 PORT = 8000
-URL = f"http://localhost:{PORT}"
 START_TIMEOUT = 15  # 等待端口就绪的最大秒数
+
+# 可选 API 令牌（LAN 共享模式的最低鉴权）：
+#   - LINEAGE_TOKEN=xxx：使用用户指定令牌
+#   - LINEAGE_TOKEN=auto（或省略）：launcher 自动生成一次性令牌，
+#     通过环境变量传给 uvicorn 子进程，并打开自带 ?token= 的 URL。
+#     LAN 内其他机器需要访问时，从 logs/launcher.log 里取令牌拼接 URL。
+#   - LINEAGE_TOKEN=off：显式关闭（无鉴权，仅建议隔离单机环境）
+TOKEN_MODE = os.environ.get("LINEAGE_TOKEN", "auto").strip().lower()
+
+
+def resolve_token() -> str:
+    """按 TOKEN_MODE 解析本次运行的 API 令牌（空串 = 不启用）。"""
+    if TOKEN_MODE == "off":
+        return ""
+    if TOKEN_MODE == "auto":
+        return secrets.token_urlsafe(16)
+    return os.environ["LINEAGE_TOKEN"]
+
+
+def browser_url(token: str) -> str:
+    base = f"http://localhost:{PORT}"
+    return f"{base}/?token={token}" if token else base
+
+
+def read_saved_token() -> str:
+    """读取上次启动保存的令牌（服务已在跑时复用，避免开到 401 的 URL）。"""
+    try:
+        return TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def log(msg: str) -> None:
@@ -89,6 +120,10 @@ def clear_pid() -> None:
         PID_FILE.unlink()
     except FileNotFoundError:
         pass
+    try:
+        TOKEN_FILE.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def find_pid_by_port(port: int = PORT) -> int | None:
@@ -129,11 +164,13 @@ def taskkill(pid: int) -> bool:
 def cmd_start() -> int:
     """启动 uvicorn 后台 + 自动开浏览器。已运行则只开浏览器。"""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    token = resolve_token()
 
     # 已有服务在跑 → 直接开浏览器，不重复启动
+    # （令牌沿用已运行实例的：从 TOKEN_FILE 读取，否则新令牌会对不上 401）
     if is_port_in_use():
         log("start: service already running, opening browser only")
-        webbrowser.open(URL)
+        webbrowser.open(browser_url(read_saved_token()))
         return 0
 
     if not PY_EXE.exists():
@@ -142,7 +179,17 @@ def cmd_start() -> int:
 
     # 启动 uvicorn 子进程：pythonw.exe 跑 uvicorn，stdout/stderr 重定向到日志
     # CREATE_NO_WINDOW 确保即使被某种方式唤起也不弹窗（pythonw 本身无窗口，双保险）
+    # 令牌经环境变量传给子进程（LINEAGE_TOKEN；api_token 配置项读取）
     log(f"start: launching uvicorn via {PY_EXE}")
+    env = dict(os.environ)
+    if token:
+        env["LINEAGE_TOKEN"] = token
+        # 令牌落盘（重复 start 时复用）+ 写日志（LAN 其他机器访问时从这里取）
+        TOKEN_FILE.write_text(token, encoding="utf-8")
+        log(f"start: API token enabled, share URL = http://<host>:{PORT}/?token={token}")
+    else:
+        log("start: WARNING no API token (LINEAGE_TOKEN=off); "
+            "LAN peers can access all APIs unauthenticated")
     with open(LOG_FILE, "w", encoding="utf-8") as log_fp:
         proc = subprocess.Popen(
             [str(PY_EXE), "-m", "uvicorn", "app.main:app",
@@ -151,6 +198,7 @@ def cmd_start() -> int:
             stdout=log_fp,
             stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NO_WINDOW,
+            env=env,
         )
     write_pid(proc.pid)
     log(f"start: uvicorn started pid={proc.pid}, waiting for port ready")
@@ -160,7 +208,7 @@ def cmd_start() -> int:
         log(f"start: WARNING port not ready within {START_TIMEOUT}s, "
             f"uvicorn may still be starting; check {LOG_FILE}")
         # 不算失败——uvicorn 可能仍在启动，让用户手动开浏览器
-        webbrowser.open(URL)
+        webbrowser.open(browser_url(token))
         return 0
 
     # 端口已就绪：记录真正的监听 PID（Popen 的 pid 可能是父进程，
@@ -169,7 +217,7 @@ def cmd_start() -> int:
     if listener_pid:
         write_pid(listener_pid)
         log(f"start: port ready, listener pid={listener_pid}")
-    webbrowser.open(URL)
+    webbrowser.open(browser_url(token))
     return 0
 
 

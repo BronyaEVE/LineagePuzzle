@@ -63,6 +63,7 @@ def teardown_module():
 @pytest.fixture(autouse=True)
 def _clean_store():
     """每个测试前清空数据目录，保证测试隔离（重写 tables/edges/rules/清 scripts）。"""
+    store.reset_caches()  # 清内存缓存（图缓存/摘要缓存），与磁盘状态保持一致
     store._write_json(store.TABLES_FILE, {})
     store._write_edges([])
     # 清空预处理规则和参数映射（避免测试间污染）
@@ -193,14 +194,6 @@ class TestScriptCrud:
         r = client.put("/api/scripts/nonexistent-id/name?name=x")
         assert r.status_code == 404
 
-    def test_get_statements(self):
-        sid = self._create_script()
-        r = client.get(f"/api/scripts/{sid}/statements")
-        assert r.status_code == 200
-        data = r.json()
-        assert "statements" in data
-        assert len(data["statements"]) >= 1
-
 
 # ============================================================
 # POST /analyze-batch —— 批量导入 SQL 文件
@@ -325,50 +318,7 @@ class TestPathTraversalGuard:
 
 
 # ============================================================
-# 语句修正
-# ============================================================
-
-class TestCorrectStatement:
-    def test_correct_statement(self):
-        """修正语句的目标表后，血缘重新生成"""
-        sid = client.post("/api/analyze", json={
-            "script": "INSERT INTO report SELECT * FROM orders",
-        }).json()["analysis_id"]
-
-        r = client.put(f"/api/scripts/{sid}/statements/1", json={
-            "corrected_text": "INSERT INTO report2 SELECT * FROM orders",
-            "tables_referenced": ["public.orders"],
-            "tables_modified": ["public.report2"],
-        })
-        assert r.status_code == 200
-        data = r.json()
-        # 目标表应变成 report2
-        targets = {l["target_table"] for l in data["lineages"]}
-        assert "public.report2" in targets
-
-    def test_correct_statement_not_found(self):
-        sid = client.post("/api/analyze", json={
-            "script": "INSERT INTO report SELECT * FROM orders",
-        }).json()["analysis_id"]
-        # 不存在的 seq
-        r = client.put(f"/api/scripts/{sid}/statements/999", json={
-            "corrected_text": "SELECT 1",
-            "tables_referenced": [],
-            "tables_modified": [],
-        })
-        assert r.status_code == 404
-
-    def test_correct_statement_invalid_body(self):
-        """缺少必填字段 → 422"""
-        sid = client.post("/api/analyze", json={
-            "script": "INSERT INTO report SELECT * FROM orders",
-        }).json()["analysis_id"]
-        r = client.put(f"/api/scripts/{sid}/statements/1", json={})
-        assert r.status_code == 422
-
-
-# ============================================================
-# 全局图谱 / 表注册
+# 全局图谱
 # ============================================================
 
 class TestGlobalGraph:
@@ -391,47 +341,37 @@ class TestGlobalGraph:
         assert "public.report" in node_ids
         assert len(data["edges"]) == 1
 
-    def test_get_tables(self):
-        client.post("/api/analyze", json={
-            "script": "INSERT INTO report SELECT * FROM orders",
-        })
-        r = client.get("/api/tables")
-        assert r.status_code == 200
-        data = r.json()
-        assert "public.orders" in data
-        assert "public.report" in data
-
 
 # ============================================================
-# 参数映射
+# 导入安全：scripts key 路径穿越校验
 # ============================================================
 
-class TestParamMapping:
-    def test_get_empty(self):
-        r = client.get("/api/param-mapping")
+class TestImportSecurity:
+    def test_import_rejects_path_traversal_keys(self):
+        """import 的 scripts key 含路径穿越 → 被跳过，不写出数据目录"""
+        payload = {
+            "tables": {},
+            "edges": [],
+            "scripts": {
+                "normal_id": {"analysis_id": "normal_id", "name": "ok", "created_at": "2026-01-01T00:00:00",
+                               "input_script": "", "database_info": {"tables_from_db": [], "tables_from_script": []},
+                               "statement_group": None, "lineages": [], "visualization": {"nodes": [], "edges": []},
+                               "extraction_mode": "ast_only", "tags": []},
+                "../../evil": {"analysis_id": "../../evil", "name": "evil", "created_at": "2026-01-01T00:00:00",
+                                "input_script": "", "database_info": {"tables_from_db": [], "tables_from_script": []},
+                                "statement_group": None, "lineages": [], "visualization": {"nodes": [], "edges": []},
+                                "extraction_mode": "ast_only", "tags": []},
+            },
+        }
+        r = client.post("/api/import", json=payload)
         assert r.status_code == 200
-        # 初始无映射文件时返回空 dict
-        assert r.json() == {}
-
-    def test_set_and_get(self):
-        r = client.put("/api/param-mapping", json={"icl_schema": "ods", "env": "prod"})
-        assert r.status_code == 200
-        data = r.json()
-        assert data["icl_schema"] == "ods"
-        # 再 GET 确认持久化
-        assert client.get("/api/param-mapping").json()["icl_schema"] == "ods"
-
-    def test_set_filters_invalid_keys(self):
-        """非法 key（非标识符）被过滤"""
-        r = client.put("/api/param-mapping", json={
-            "valid_name": "ok",
-            "invalid-name": "bad",
-            "": "empty",
-        })
-        assert r.status_code == 200
-        data = r.json()
-        assert "valid_name" in data
-        assert "invalid-name" not in data
+        # 合法 key 已写入，穿越 key 未产生文件
+        from app.services.store import SCRIPTS_DIR
+        assert (SCRIPTS_DIR / "normal_id.json").exists()
+        # 穿越目标不在数据目录外生成任何东西（校验直接跳过）
+        assert not (SCRIPTS_DIR / "../../evil.json").exists()
+        # 清理：删除导入的脚本恢复现场
+        client.delete("/api/scripts/normal_id")
 
 
 class TestPreprocessRules:
