@@ -6,6 +6,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.services.analyzer import analyze
 
 
+def setup_module():
+    """数据目录重定向到临时目录（防测试数据写进真实 backend/data）。"""
+    from tests.conftest import redirect_store
+    redirect_store()
+
+
+def teardown_module():
+    from tests.conftest import restore_store
+    restore_store()
+
+
+
+
 class TestOfflineMode:
     """DESIGN.v2 §7.1：无 DB 连接的离线模式（database_config=None）"""
 

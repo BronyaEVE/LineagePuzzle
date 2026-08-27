@@ -10,9 +10,22 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.services.preprocessor import preprocess, replace_params, apply_rules
-from app.services.lineage_extractor import extract_lineages
+from lineage_puzzle.preprocessor import preprocess, replace_params, apply_rules
+from lineage_puzzle.lineage_extractor import extract_lineages
 from app.models.statement import Statement, StatementType
+
+
+def setup_module():
+    """数据目录重定向到临时目录（防测试数据写进真实 backend/data）。"""
+    from tests.conftest import redirect_store
+    redirect_store()
+
+
+def teardown_module():
+    from tests.conftest import restore_store
+    restore_store()
+
+
 
 
 # 构造参数映射规则的辅助函数

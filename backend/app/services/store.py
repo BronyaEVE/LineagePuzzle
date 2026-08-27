@@ -24,7 +24,7 @@ import networkx as nx
 from filelock import FileLock
 
 from ..models.analysis import AnalysisResult, GlobalEdge, GlobalGraph, ScriptSummary, VisNode
-from .normalize import normalize_table_name
+from lineage_puzzle.normalize import normalize_table_name
 
 DATA_DIR = Path(
     os.environ.get("LINEAGE_DATA_DIR")

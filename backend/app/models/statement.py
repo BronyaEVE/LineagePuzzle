@@ -1,28 +1,6 @@
-from enum import Enum
+"""语句模型（引擎包再导出）。
 
-from pydantic import BaseModel, Field
-
-
-class StatementType(str, Enum):
-    CREATE = "CREATE"
-    INSERT = "INSERT"
-    UPDATE = "UPDATE"
-    DELETE = "DELETE"
-    MERGE = "MERGE"
-    UNKNOWN = "UNKNOWN"
-
-
-class Statement(BaseModel):
-    seq: int = Field(..., description="语句序号，从 1 开始")
-    type: StatementType
-    text: str = Field(..., description="语句文本")
-    tables_referenced: list[str] = Field(default_factory=list)
-    tables_created: list[str] = Field(default_factory=list)
-    tables_modified: list[str] = Field(default_factory=list)
-
-
-class StatementGroup(BaseModel):
-    group_id: str
-    original_script: str = Field(..., description="原始脚本全文")
-    preprocessed_script: str = Field(..., description="预处理后的脚本")
-    statements: list[Statement] = Field(default_factory=list)
+Statement/StatementGroup/StatementType 已迁至 lineage_puzzle 包；
+此处再导出以保持 `from ..models.statement import ...` 的既有引用不变。
+"""
+from lineage_puzzle.schemas import Statement, StatementGroup, StatementType  # noqa: F401

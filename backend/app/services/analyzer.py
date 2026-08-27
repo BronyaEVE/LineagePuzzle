@@ -3,33 +3,37 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from lineage_puzzle.lineage_extractor import extract_lineages
+from lineage_puzzle.preprocessor import preprocess
+from lineage_puzzle.schemas import StatementGroup, TableType
+from lineage_puzzle.splitter import split_statements
+
 from ..models.analysis import AnalysisResult, DatabaseInfo, VisEdge, VisNode, Visualization
-from ..models.lineage import ColumnInfo, TableInfo, TableType
-from ..models.statement import StatementGroup
+from ..models.lineage import TableInfo
 from ..schemas.requests import DatabaseConfig
 from .db_connector import DBConnector
-from .lineage_extractor import extract_lineages
-from .preprocessor import preprocess
 from . import store
-from .splitter import split_statements
 
 
 def analyze(script: str, db_config: DatabaseConfig | None) -> AnalysisResult:
-    """完整分析编排：预处理 → 拆分 → 血缘提取（AST）→ DB 校验（可选）→ 结果组装。
+    """完整分析编排：预处理 → 拆分 → 血缘提取（引擎包）→ DB 校验（可选）→ 结果组装。
+
+    引擎管线（预处理/拆分/AST 血缘提取）来自 lineage_puzzle 包
+    （git 依赖，单一真相源）；本模块只负责 Web 侧特有部分：
+    预处理规则的存储读取、DB 校验降级、脚本建表信息与可视化组装。
 
     DESIGN.v2 §3.1/§5.5：血缘提取统一走 sqlglot AST，无外部依赖、可离线运行。
     db_config 为 None 时进入纯 AST 模式（ast_only），不连接数据库。
-
-    db_config 提供时，DB 连接仅用于读 INFORMATION_SCHEMA 校验表存在性 / 补充列信息，
-    不参与血缘提取（不再执行 EXPLAIN）。DB 连接失败时降级为 ast_only。
+    DB 连接仅用于读 INFORMATION_SCHEMA 校验表存在性 / 补充列信息，
+    失败时降级为 ast_only。
     """
 
-    # 步骤1+2: 预处理（含参数映射规则 + 自定义清洗规则）和拆分
+    # 步骤1+2: 预处理（含参数映射规则 + 自定义清洗规则）和拆分（引擎包）
     rules = store.get_preprocess_rules()
     cleaned = preprocess(script, rules=rules)
     group = split_statements(cleaned, original_script=script)
 
-    # 步骤3: 提取血缘关系（纯 AST，不依赖 DB）
+    # 步骤3: 提取血缘关系（纯 AST，不依赖 DB；引擎包）
     lineages, table_type_map = extract_lineages(group.statements)
 
     # 步骤4: 可选的 DB 校验（仅读表结构，不执行 EXPLAIN）

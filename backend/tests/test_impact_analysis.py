@@ -9,6 +9,19 @@ from app.models.lineage import Lineage, OperationType, ExtractionMethod, TableIn
 from app.models.statement import StatementGroup, Statement, StatementType
 
 
+def setup_module():
+    """数据目录重定向到临时目录（防测试数据写进真实 backend/data）。"""
+    from tests.conftest import redirect_store
+    redirect_store()
+
+
+def teardown_module():
+    from tests.conftest import restore_store
+    restore_store()
+
+
+
+
 def _make_lineage_result(script_id, edges):
     """构建测试用 AnalysisResult（只关心 edges）。"""
     lineages = []

@@ -1,6 +1,11 @@
 # 生产运行依赖（精确锁定版本，保证离线分发包行为一致）
 # 离线打包：pack_portable.bat 用 --index-url 清华源装这些版本
 
+# ---- 引擎（血缘分析核心，单一真相源在 BronyaEVE/lineage_puzzle 仓）----
+# v0.1.0 起引擎管线（预处理/拆分/AST 提取/列级映射/归一化）从该包引入，
+# 本仓不再内嵌副本（消除双仓分叉）。升版流程：引擎仓修 bug → 打 tag → 改此行。
+lineage_puzzle @ git+https://github.com/BronyaEVE/lineage_puzzle.git@v0.1.0
+
 # ---- 应用核心 / App core ----
 fastapi==0.135.1
 uvicorn[standard]==0.41.0
