@@ -328,7 +328,8 @@ def main():
     else:
         # 默认 data 目录
         if data_dir is None:
-            data_dir = Path(__file__).resolve().parent / "data"
+            # 仓库根/backend/data（脚本从 backend/ 移至 scripts/ 后需上溯）
+            data_dir = Path(__file__).resolve().parent.parent / "backend" / "data"
         if not Path(data_dir).exists():
             print(f"错误: data 目录不存在: {data_dir}")
             print("用法: python analyze_complexity.py [export.json | --data /path/to/data]")
