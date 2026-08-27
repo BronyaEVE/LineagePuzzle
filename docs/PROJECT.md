@@ -1,7 +1,5 @@
 # LineagePuzzle — 项目文档
 
-**简体中文** | [English](./PROJECT.en.md)
-
 > 本文是详细文档。快速上手见 [README.md](../README.md)。
 
 ## 项目背景与目标
