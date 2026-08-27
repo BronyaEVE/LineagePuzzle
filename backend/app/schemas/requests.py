@@ -10,15 +10,10 @@ class DatabaseConfig(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
-    script: str = Field(..., min_length=1, description="DML 脚本文本")
+    # max_length：防内存/CPU DoS（无认证部署下超大 payload 会被整体载入内存）
+    script: str = Field(..., min_length=1, max_length=10 * 1024 * 1024, description="DML 脚本文本")
     # DESIGN.v2 §7.1：database_config 可选。不提供时以纯 AST 模式（ast_only）分析，不连接数据库。
     database_config: DatabaseConfig | None = None
-
-
-class CorrectStatementRequest(BaseModel):
-    corrected_text: str = Field(..., min_length=1)
-    tables_referenced: list[str] = Field(default_factory=list)
-    tables_modified: list[str] = Field(default_factory=list)
 
 
 class BatchFileItem(BaseModel):
@@ -27,8 +22,8 @@ class BatchFileItem(BaseModel):
     name: 文件名（如 "create_tables.sql"），作为脚本的显示名。
     content: 文件内容（SQL 文本），前端已读取并（zip 已解压）。
     """
-    name: str = Field(..., min_length=1)
-    content: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1, max_length=255)
+    content: str = Field(..., min_length=1, max_length=10 * 1024 * 1024)
 
 
 class BatchAnalyzeRequest(BaseModel):
@@ -36,8 +31,9 @@ class BatchAnalyzeRequest(BaseModel):
 
     前端解压 zip + 读取所有 .sql 文件内容后，以 JSON 数组形式提交，
     后端逐个 analyze + save_script。无需 python-multipart（避免新依赖）。
+    files: 上限 200 个，防单请求阻塞 worker 过久（DoS 缓解）。
     """
-    files: list[BatchFileItem] = Field(..., min_length=1)
+    files: list[BatchFileItem] = Field(..., min_length=1, max_length=200)
     database_config: DatabaseConfig | None = None
     # 可选：整批脚本统一打上这组标签（扁平标签数组，如 ["C层","个人借据"]）。
     # 留空则每个脚本 tags 为空，后续可在列表里逐条补标。

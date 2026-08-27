@@ -24,3 +24,6 @@ build/
 # 便携包/桌面版 zip 产物（含版本号命名，如 LineagePuzzle-v2.1.0-portable.zip）
 LineagePuzzle-*-portable.zip
 *-portable.zip
+
+# 压测样本（scripts/gen_heavy_workload.py 生成，不入库）
+samples/

@@ -424,21 +424,28 @@
 | `/scripts/{id}/name` | PUT | 重命名 |
 | `/scripts/{id}/tags` | PUT | 给脚本打标（全量替换，`tags: string[]`） |
 | `/scripts/batch-tags` | POST | 批量给多个脚本打同一组标签（`{script_ids, tags}`） |
-| `/scripts/{id}/statements` | GET | 语句分段 |
-| `/scripts/{id}/statements/{seq}` | PUT | 修正语句解析 |
 
 ### 全局数据
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/global-graph` | GET | 全局图谱（含 column_mappings） |
-| `/tables` | GET | 全局表注册表 |
+| `/global-graph` | GET | 全局图谱（含 column_mappings；读自实体图内存缓存） |
+| `/column-mappings` | GET | 列级血缘映射聚合（edges 为真相源，按语句去重；供列级追溯） |
 | `/tag-schema` | GET / PUT | 标签维度定义（`{dimensions: [{name, values}]}`）；默认空，管理员维护 |
 | `/preprocess-rules` | GET / PUT | 预处理规则（正则替换规则；参数映射为内置类型） |
-| `/param-mapping` | GET / PUT | *(旧版，向后兼容，等价于 /preprocess-rules)* |
 | `/export` | GET | 导出全部数据（含 `tag_schema`） |
-| `/import` | POST | 导入数据（覆盖） |
+| `/import` | POST | 导入数据（覆盖；scripts key 经白名单校验防路径穿越） |
 | `/health` | GET | 健康检查 |
+
+> **已删除端点**（2026-08 表为中心改造）：`GET /tables`（由 `/global-graph` 覆盖）、
+> `GET/PUT /param-mapping`（由 `/preprocess-rules` 覆盖）、
+> `GET /scripts/{id}/statements` 与 `PUT /scripts/{id}/statements/{seq}`
+> （语句修正功能无 UI 路径，随脚本视图一并移除）。导出文件的 `param_mapping`
+> 字段保留向后兼容。
+>
+> **可选鉴权**：设置 `LINEAGE_TOKEN` 环境变量后所有 `/api/*` 需携带
+> `?token=` 或 Bearer 头；launcher 便携模式自动生成并写入 URL。
+> 详见 [SECURITY.md](./SECURITY.md)。
 
 ---
 

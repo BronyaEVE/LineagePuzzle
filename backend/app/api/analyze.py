@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException
 
 from ..models.analysis import AnalysisResult, ScriptSummary, GlobalGraph
 from ..schemas.requests import (
-    AnalyzeRequest, CorrectStatementRequest, BatchAnalyzeRequest,
+    AnalyzeRequest, BatchAnalyzeRequest,
     SetScriptTagsRequest, BatchSetTagsRequest, TagSchema,
 )
 from ..services.analyzer import analyze
-from ..services.lineage_extractor import extract_lineages
 from ..services import store
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("/analyze", response_model=AnalysisResult)
@@ -20,7 +23,9 @@ async def analyze_script(request: AnalyzeRequest):
     try:
         result = analyze(request.script, request.database_config)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
+        # 安全：完整异常只进日志（可能含 DB 连接信息），响应给通用文案
+        logger.exception("analyze failed")
+        raise HTTPException(status_code=500, detail="分析失败（详见服务端日志）") from e
 
     result = store.save_script(result)
     return result
@@ -50,13 +55,15 @@ async def analyze_batch(request: BatchAnalyzeRequest):
             result = store.save_script(result)
             results.append(result)
         except Exception as e:
-            errors.append(f"{item.name}: {str(e)}")
+            # 安全：文件名+异常类型对外，完整堆栈只进日志
+            logger.warning("batch analyze failed for %s: %s", item.name, e)
+            errors.append(f"{item.name}: {type(e).__name__}")
 
     # 全部失败才报错；部分成功则正常返回成功的列表
     if errors and not results:
         raise HTTPException(
             status_code=500,
-            detail="全部文件分析失败: " + "; ".join(errors),
+            detail="全部文件分析失败（详见服务端日志）",
         )
     return results
 
@@ -132,57 +139,6 @@ async def batch_set_script_tags(request: BatchSetTagsRequest):
     return result
 
 
-@router.get("/scripts/{script_id}/statements")
-async def get_statements(script_id: str):
-    """获取脚本的语句分段。"""
-    result = store.get_script(script_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="脚本不存在")
-    if not result.statement_group:
-        raise HTTPException(status_code=404, detail="语句分段不存在")
-    return result.statement_group
-
-
-@router.put("/scripts/{script_id}/statements/{seq}", response_model=AnalysisResult)
-async def correct_statement(script_id: str, seq: int, request: CorrectStatementRequest):
-    """修正语句解析结果并重新生成血缘。"""
-    try:
-        result = store.get_script(script_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if not result:
-        raise HTTPException(status_code=404, detail="脚本不存在")
-    if not result.statement_group:
-        raise HTTPException(status_code=404, detail="语句分段不存在")
-
-    # 找到并更新语句
-    stmt = None
-    for s in result.statement_group.statements:
-        if s.seq == seq:
-            stmt = s
-            break
-    if not stmt:
-        raise HTTPException(status_code=404, detail=f"语句 #{seq} 不存在")
-
-    stmt.text = request.corrected_text
-    stmt.tables_referenced = request.tables_referenced
-    stmt.tables_modified = request.tables_modified
-
-    # 重新提取血缘
-    lineages, table_type_map = extract_lineages(result.statement_group.statements)
-    result.lineages = lineages
-
-    # 重新构建可视化
-    from ..services.analyzer import _build_visualization
-    result.visualization = _build_visualization(lineages, table_type_map)
-
-    # 原子地替换该脚本的边（删旧边 + 保存新结果 + 加新边，全程持锁）
-    # 注意：不能分开调 _remove_edges_for_script + save_script，中间无锁会丢数据
-    store.replace_script_edges(result)
-
-    return result
-
-
 # === 全局图谱 ===
 
 @router.get("/global-graph", response_model=GlobalGraph)
@@ -191,30 +147,13 @@ async def get_global_graph():
     return store.get_global_graph()
 
 
-@router.get("/tables")
-async def get_tables():
-    """获取全局表注册表。"""
-    return store.get_tables()
+@router.get("/column-mappings")
+async def get_column_mappings():
+    """聚合列级血缘映射（实体图缓存派生，按语句去重）。
 
-
-# === 全局参数映射 ===
-
-@router.get("/param-mapping")
-async def get_param_mapping():
-    """获取全局参数映射表 {param_name: actual_value}。
-
-    用于分析时把 SQL 里的 ${param} 占位符替换成实际值。
+    供前端「列级追溯」视图在客户端做按列的递归上游追溯。
     """
-    return store.get_param_mapping()
-
-
-@router.put("/param-mapping")
-async def set_param_mapping(mapping: dict):
-    """[已废弃] 更新全局参数映射表（全量替换）。
-
-    保留向后兼容。新代码应使用 PUT /preprocess-rules。
-    """
-    return store.set_param_mapping(mapping)
+    return store.get_column_mappings()
 
 
 # === 预处理规则（参数映射 + 自定义清洗，统一为正则替换规则）===

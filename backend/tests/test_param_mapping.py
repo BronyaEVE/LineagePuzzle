@@ -209,10 +209,10 @@ class TestEndToEndParamLineage:
         assert lineages[0].target_table == "dw_prod.report"
 
 
-# ============ store 参数映射读写测试（向后兼容接口） ============
+# ============ store 参数映射读测试（向后兼容接口；set 已随路由删除） ============
 
 class TestStoreParamMapping:
-    """store 层参数映射持久化（通过 preprocess_rules 实现）"""
+    """store 层参数映射读取（通过 preprocess_rules 实现；仅 export 兼容用）"""
 
     def test_get_empty_when_no_file(self):
         from app.services import store
@@ -223,40 +223,18 @@ class TestStoreParamMapping:
             store.PREPROCESS_RULES_FILE.unlink()
         assert store.get_param_mapping() == {}
 
-    def test_set_and_get(self):
-        from app.services import store
-        # 先清空确保干净
-        if store.PREPROCESS_RULES_FILE.exists():
-            store.PREPROCESS_RULES_FILE.unlink()
-        result = store.set_param_mapping({"icl_schema": "ods", "env": "prod"})
-        assert result == {"icl_schema": "ods", "env": "prod"}
-        assert store.get_param_mapping() == {"icl_schema": "ods", "env": "prod"}
-
-    def test_set_filters_invalid_keys(self):
-        """非法 key（非标识符）被过滤"""
+    def test_get_reflects_param_rules(self):
+        """get_param_mapping 从 preprocess_rules 的 param-* 规则反解"""
         from app.services import store
         if store.PREPROCESS_RULES_FILE.exists():
             store.PREPROCESS_RULES_FILE.unlink()
-        result = store.set_param_mapping({
-            "valid_name": "ok",
-            "invalid-name": "bad",  # 含连字符
-            "": "empty",            # 空 key
-            "also valid": "bad",    # 含空格
-        })
-        assert "valid_name" in result
-        assert "invalid-name" not in result
-        assert "" not in result
-        assert "also valid" not in result
-
-    def test_set_full_replace(self):
-        """PUT 是全量替换，不是合并"""
-        from app.services import store
-        if store.PREPROCESS_RULES_FILE.exists():
-            store.PREPROCESS_RULES_FILE.unlink()
-        store.set_param_mapping({"a": "1", "b": "2"})
-        store.set_param_mapping({"c": "3"})  # 全量替换，a/b 没了
-        result = store.get_param_mapping()
-        assert result == {"c": "3"}
+        # 直接写 preprocess_rules（set_param_mapping 已删除，写入走规则接口）
+        store.set_preprocess_rules([
+            {"id": "param-icl_schema", "name": "参数映射: icl_schema",
+             "pattern": r"\$\{icl_schema\}", "replacement": "ods",
+             "enabled": True, "builtin": True, "locked": False},
+        ])
+        assert store.get_param_mapping() == {"icl_schema": "ods"}
 
 
 # ============ store 预处理规则读写测试 ============

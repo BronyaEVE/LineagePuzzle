@@ -103,6 +103,7 @@ def setup_module():
     store.SCRIPTS_DIR = store.DATA_DIR / "scripts"
     store.LOCK_FILE = store.DATA_DIR / "store.lock"
     store.TAG_SCHEMA_FILE = store.DATA_DIR / "tag_schema.json"
+    store.reset_caches()  # 数据目录已重定向，清内存缓存
 
 
 def teardown_module():
@@ -115,6 +116,7 @@ def teardown_module():
         store.SCRIPTS_DIR = store.DATA_DIR / "scripts"
         store.LOCK_FILE = store.DATA_DIR / "store.lock"
         store.TAG_SCHEMA_FILE = store.DATA_DIR / "tag_schema.json"
+        store.reset_caches()
 
 
 def _read_edges():
@@ -872,7 +874,13 @@ class TestExportImport:
         store.import_all({"version": 1, "tables": {}, "edges": [], "scripts": {}, "param_mapping": {}})
         store.save_script(_make_result("rt1"))
         store.save_script(_make_result("rt2"))
-        store.set_param_mapping({"icl_schema": "ods"})
+        # set_param_mapping 已删除；通过规则接口写入参数规则（export 的
+        # 向后兼容 param_mapping 字段由此反解）
+        store.set_preprocess_rules([
+            {"id": "param-icl_schema", "name": "参数映射: icl_schema",
+             "pattern": r"\$\{icl_schema\}", "replacement": "ods",
+             "enabled": True, "builtin": True, "locked": False},
+        ])
 
         # 导出
         exported = store.export_all()

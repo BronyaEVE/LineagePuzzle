@@ -21,12 +21,6 @@ export interface AnalyzeRequest {
   database_config: DatabaseConfig | null;
 }
 
-export interface CorrectStatementRequest {
-  corrected_text: string;
-  tables_referenced: string[];
-  tables_modified: string[];
-}
-
 /** 单条预处理规则（正则替换）。
  * 把「参数映射」和「自定义清洗」统一为规则。分析前按数组顺序执行 re.sub(pattern, replacement)。
  */
@@ -82,6 +76,12 @@ export interface ColumnMapping {
   source_table: string;
   source_columns: string[];  // 表达式可能多源列，如 price*qty → ["price","qty"]
   transformation: string | null;  // SUM(x)、price*qty；纯列引用为 null
+}
+
+/** 列级追溯用：ColumnMapping + 来源脚本定位（聚合自全脚本 lineages）。 */
+export interface ColumnMappingTrace extends ColumnMapping {
+  script_id: string;
+  statement_seq: number;
 }
 
 export interface Lineage {

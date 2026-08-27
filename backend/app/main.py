@@ -1,13 +1,29 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api.analyze import router as analyze_router
 from .config import settings
+from .services import store
 
-app = FastAPI(title=settings.app_name, debug=settings.debug)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动预热实体图缓存：首次请求即可 O(1) 查询上下游
+    store.warm_cache()
+    # 安全提示：绑非回环地址且未配置令牌时，LAN 内任何人可无鉴权访问全部 API
+    yield
+
+
+app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
+
+# 响应压缩：/api/graph、/api/column-mappings 等大 JSON 载荷（可到数 MB）
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,6 +32,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def token_auth_middleware(request: Request, call_next):
+    """可选 API 令牌鉴权（LINEAGE_TOKEN 环境变量设置后生效）。
+
+    用于便携版 0.0.0.0 LAN 共享模式的最小防护：未携带令牌的 /api/* 请求
+    一律 401。令牌可通过 ?token= 查询参数或 Authorization: Bearer 头携带
+    （前端从自身 URL 的 ?token= 读取并附加，launcher 生成的 URL 自带）。
+    未配置令牌时本中间件直通（本地/桌面模式），静态资源不受影响。
+    """
+    token = settings.api_token
+    if token and request.url.path.startswith("/api"):
+        provided = request.query_params.get("token") or _bearer(request)
+        if provided != token:
+            return JSONResponse({"detail": "未授权：缺少或错误的 API 令牌"}, status_code=401)
+    return await call_next(request)
+
+
+def _bearer(request: Request) -> str | None:
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[len("Bearer "):]
+    return None
+
 
 app.include_router(analyze_router, prefix="/api")
 
