@@ -109,7 +109,7 @@
 git clone https://github.com/BronyaEVE/LineagePuzzle.git
 cd LineagePuzzle
 
-# 安装依赖
+# 安装依赖（含从 git 拉取 lineage_puzzle 引擎包，需联网+git）
 cd backend && pip install -r requirements.txt
 cd ../frontend && npm install
 
@@ -224,7 +224,7 @@ public.orders → public.order_report   操作：INSERT   语句 #1
 |----|------|
 | 前端 | React 19 + TypeScript + antd v6 + React Flow (@xyflow/react v12) |
 | 后端 | Python FastAPI + Pydantic |
-| SQL 解析 | sqlglot（AST 静态解析，唯一血缘来源） |
+| SQL 解析 | [lineage_puzzle](https://github.com/BronyaEVE/lineage_puzzle) 引擎包（sqlglot AST 静态解析，唯一血缘来源；本仓不内嵌引擎副本） |
 | 图算法 | networkx（影响分析的最短/全路径、环检测） |
 | 存储 | JSON / JSONL + filelock（无数据库依赖）；实体图内存缓存（双向邻接） |
 | 部署 | Python embeddable（便携版零安装）；LAN 模式可选 API 令牌 |
@@ -238,10 +238,11 @@ datalineage_visualizer/
 ├── backend/
 │   ├── app/
 │   │   ├── api/           # FastAPI 路由（16 个 REST 端点）
-│   │   ├── services/      # 血缘提取、存储（实体图缓存）、预处理规则
+│   │   ├── services/      # 分析编排、实体图存储（缓存）、DB 校验、预处理规则
+│   │   │                   # （引擎管线来自 lineage_puzzle 包依赖，见 requirements.txt）
 │   │   ├── models/        # Pydantic 数据模型
 │   │   └── main.py        # FastAPI 应用 + 令牌鉴权 + GZip + 静态托管
-│   ├── tests/             # 283 个测试
+│   ├── tests/             # 156 个测试（引擎的 127 个测试已随包迁至 lineage_puzzle 仓）
 │   └── requirements.txt   # 9 个核心依赖
 ├── frontend/
 │   └── src/
@@ -263,24 +264,19 @@ datalineage_visualizer/
 ## 📊 测试
 
 ```bash
-cd backend && python -m pytest    # 283 passed
+cd backend && python -m pytest    # 156 passed（引擎测试在 lineage_puzzle 仓，另 142 个）
 ```
 
-测试文件（11 个文件，覆盖全部层）：
+Web 侧测试（6 个文件；引擎测试已迁至 [lineage_puzzle](https://github.com/BronyaEVE/lineage_puzzle) 仓）：
 
 | 文件 | 覆盖范围 |
 |------|---------|
-| `test_preprocessor` | 去注释、DO block 提取、事务补分号、预处理规则 |
-| `test_param_mapping` | 参数替换、预处理规则 CRUD、自动迁移 |
-| `test_splitter` | 语句拆分、类型检测、事务块 |
 | `test_api` | 全部 REST 端点（TestClient 端到端）、导入路径穿越防护、标签端点 |
 | `test_store` | 持久化、影响分析、导入导出、路径遍历防护、标签维度+打标、缓存一致性 |
-| `test_lineage_e2e` | 端到端血缘：CASE WHEN、DO block、跨 schema、事务 |
-| `test_lineage_extractor` | 表级血缘提取、多源 JOIN、临时表链路 |
-| `test_column_lineage` | 列级映射、子查询穿透、UPDATE 血缘 |
-| `test_normalize` | 表名归一化、大小写折叠（PostgreSQL 语义） |
 | `test_impact_analysis` | all_simple_paths、菱形依赖、路径爆炸防护 |
-| `test_analyzer` | 离线模式、DB 降级 |
+| `test_analyzer` | 分析编排、DB 降级 |
+| `test_param_mapping` | 参数替换、预处理规则 CRUD、自动迁移 |
+| `conftest` | 共享数据目录隔离（redirect_store，防测试写进真实 data/） |
 
 ---
 
