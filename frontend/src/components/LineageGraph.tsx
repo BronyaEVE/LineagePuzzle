@@ -19,6 +19,7 @@ import { ColumnWidthOutlined, ColumnHeightOutlined, FileImageOutlined, FileOutli
 import { toPng } from "html-to-image";
 import type { GlobalGraph, GlobalEdge, Visualization, ColumnMapping } from "../types";
 import { impactAnalysis as fetchImpactAnalysis } from "../api/client";
+import { buildStandaloneHtml } from "../utils/exportHtml";
 
 const NODE_COLORS: Record<string, string> = {
   source: "#52c41a",
@@ -36,7 +37,7 @@ const NODE_H = 40;
 // 节点宽度自适应：短表名收缩到最小，超长表名上限封顶 + 省略号
 // MIN_W 留足余量给边缘的折叠按钮（14px），避免按钮占比过大遮挡视觉
 const NODE_MIN_W = 150;
-const NODE_MAX_W = 260;
+const NODE_MAX_W = 300;
 
 // 布局参数（TB 和 LR 几何语义不同，分开定义避免混用导致重叠）：
 //   TB（垂直）：层间沿 y 轴（垂直），层内沿 x 轴（水平）→ 层内按节点【宽度】算间距
@@ -44,32 +45,39 @@ const NODE_MAX_W = 260;
 // 注意：折叠按钮凸出节点边缘 7px，层间距需留够净空给按钮 + 箭头 + 边标签。
 const LAYER_GAP_TB = 120;   // TB 层与层之间的垂直间距（y 轴）— 给箭头标签留空间
 const INTRA_GAP_TB = 40;    // TB 层内节点之间的水平间隙（x 轴，节点边到边）
-const LAYER_GAP_LR = 280;   // LR 层与层之间的水平间距（x 轴，需 ≥ 节点宽度 + 箭头空间）
-const INTRA_GAP_LR = 20;    // LR 层内节点之间的垂直间隙（y 轴，节点边到边）
+const LAYER_GAP_LR = 320;   // LR 层与层之间的水平间距（x 轴，需 ≥ 节点最大宽度 + 箭头空间）
+const INTRA_GAP_LR = 24;    // LR 层内节点之间的垂直间隙（y 轴，需容纳两行节点高度）
 
 type LayoutDir = "TB" | "LR";
 
 /**
  * 节点样式：宽度自适应（fit-content）但有上下限。
- * 短名（orders）收缩到 NODE_MIN_W；长名（staging.tmp_order_detail）
- * 增长到 NODE_MAX_W 封顶，label 用 ellipsis 截断。
- * label 文字包一层带 overflow 的 span，超出 maxWidth 显示省略号。
+ * 短名（orders）收缩到 NODE_MIN_W；超长名封顶 NODE_MAX_W 后省略。
+ * 带 schema 的名字两行显示：schema 是顶部小字副行，表名独占主行拿全部
+ * 宽度（旧行为把 schema 和表名挤在同一行且截断优先保 schema，导致
+ * schema.table 名几乎都显示不全）。展开点击后仍单行显示完整名。
  */
-// 表名显示截断阈值：超过则在 schema 名后省略，保证节点宽度可控
-// 完整名仍存在 node.data.fullName，避免 CSS ellipsis 在 React Flow
-// 嵌套结构里失效导致节点撑破 maxWidth 进而重叠
-const LABEL_MAX_CHARS = 24;
+// 单行显示字符上限（≈ (NODE_MAX_W - 内边距) / 13px semibold 字宽），
+// 超出省略；完整名仍在 node.data.fullName，悬停 title 可见
+const LABEL_MAX_CHARS = 34;
 
-function truncateLabel(label: string): string {
-  if (label.length <= LABEL_MAX_CHARS) return label;
-  // schema.table 格式：保留 schema + 前几个字符 + 省略号
-  const dotIdx = label.indexOf(".");
-  if (dotIdx > 0 && dotIdx < LABEL_MAX_CHARS - 3) {
-    const schema = label.slice(0, dotIdx + 1);
-    const rest = label.slice(dotIdx + 1, LABEL_MAX_CHARS - schema.length - 1);
-    return `${schema}${rest}…`;
+function ellipsize(s: string): string {
+  return s.length <= LABEL_MAX_CHARS ? s : s.slice(0, LABEL_MAX_CHARS - 1) + "…";
+}
+
+/** 拆出 schema 与表名（按最后一个点切，兼容 db.schema.table）。 */
+function splitLabel(fullName: string): { schema: string | null; name: string } {
+  const dot = fullName.lastIndexOf(".");
+  if (dot > 0 && dot < fullName.length - 1) {
+    return { schema: ellipsize(fullName.slice(0, dot)), name: ellipsize(fullName.slice(dot + 1)) };
   }
-  return label.slice(0, LABEL_MAX_CHARS - 1) + "…";
+  return { schema: null, name: ellipsize(fullName) };
+}
+
+/** 供节点 data 使用的展示字段（label=表名主行，schema=副行或 undefined）。 */
+function labelData(fullName: string): { label: string; schema?: string; fullName: string } {
+  const { schema, name } = splitLabel(fullName);
+  return { label: name, schema: schema ?? undefined, fullName };
 }
 
 function nodeStyle(nodeType: string): React.CSSProperties {
@@ -289,7 +297,7 @@ function findBlockingCollapses(
  * 返回 null 表示目标在当前视图已失效（边找不到等），调用方应忽略本次聚焦。
  */
 function resolveFocusNodeIds(
-  target: { type: "node" | "edge" | "field"; id: string; edgeIds?: string[] },
+  target: { type: "node" | "edge" | "field"; id: string; edgeIds?: string[]; edgePairs?: [string, string][] },
   edges: Edge[],
 ): { nodeIds: Set<string>; hitEdges: Edge[] } | null {
   if (target.type === "node") {
@@ -300,13 +308,18 @@ function resolveFocusNodeIds(
     if (!found) return null;
     return { nodeIds: new Set([found.source, found.target]), hitEdges: [found] };
   }
-  // field: 用 SearchBox 聚合时透传的 edgeIds 找命中的边（更可靠）；
-  // 兜底用 id（格式 `table.col`）重新扫 column_mappings 匹配（防止 edgeIds 缺失）。
-  let hitEdges: Edge[];
+  // field 分支：edgeIds 是全局视图编号（ge-N），子图视图（e-M）对不上；
+  // 此时退回 (source,target) 对匹配（视图无关），再退回列名扫描兜底
+  let hitEdges: Edge[] = [];
   if (target.edgeIds && target.edgeIds.length > 0) {
     const idSet = new Set(target.edgeIds);
     hitEdges = edges.filter((e) => idSet.has(e.id));
-  } else {
+  }
+  if (hitEdges.length === 0 && target.edgePairs && target.edgePairs.length > 0) {
+    const pairSet = new Set(target.edgePairs.map(([s, t]) => `${s}|${t}`));
+    hitEdges = edges.filter((e) => pairSet.has(`${e.source}|${e.target}`));
+  }
+  if (hitEdges.length === 0) {
     const dot = target.id.indexOf(".");
     if (dot < 0) return null; // 不是 table.col 格式，无法兜底匹配
     const tbl = target.id.slice(0, dot);
@@ -352,6 +365,8 @@ function buildEdgeSetFromPaths(
  */
 interface CollapsibleNodeData {
   label: string;
+  /** schema 副行（如 ods / staging）；undefined = 单行显示（无 schema 或已展开） */
+  schema?: string;
   fullName?: string;
   nodeType?: string;
   isUpCollapsed?: boolean;
@@ -402,10 +417,22 @@ const CollapsibleNode: React.FC<{ id: string; data: CollapsibleNodeData }> = Rea
   // 位置随布局方向：TB 时 target=top/source=bottom，LR 时 target=left/source=right。
   const targetPos = isVertical ? Position.Top : Position.Left;
   const sourcePos = isVertical ? Position.Bottom : Position.Right;
+  // 标签必须是常规流内容：外层 .react-flow__node 靠 fit-content 由它撑出
+  // 真实宽高（RF 测量后 Handle/边才能附着对位）。不能用 absolute 覆盖层装文字
+  // ——覆盖层不参与尺寸计算，节点盒子会塌成 ~20px，两行文本溢出彩色底；
+  // flex 容器还会把 schema/表名两个 div 横向并排。
+  // 折叠按钮（absolute）以 RF 外层为定位锚，不受此影响。
   return (
-    <div className="collapsible-node">
+    <>
       <Handle type="target" position={targetPos} style={{ opacity: 0 }} />
-      {data.label as string}
+      <div style={{ textAlign: "center" }} title={data.fullName}>
+        {data.schema ? (
+          <div style={{ fontSize: 10, fontWeight: 500, lineHeight: "14px", opacity: 0.85 }}>
+            {data.schema}
+          </div>
+        ) : null}
+        <div style={{ lineHeight: "18px" }}>{data.label}</div>
+      </div>
       <Handle type="source" position={sourcePos} style={{ opacity: 0 }} />
       {(data.hasInEdges || data.isUpCollapsed) && (
         <CollapseButton
@@ -425,7 +452,7 @@ const CollapsibleNode: React.FC<{ id: string; data: CollapsibleNodeData }> = Rea
           onClick={() => toggleDown(id)}
         />
       )}
-    </div>
+    </>
   );
 });
 
@@ -444,8 +471,10 @@ export interface FocusTarget {
   type: "node" | "edge" | "field";
   id: string;            // node: node.id；edge: 边 id；field: 字段名
   focusToken: number;    // 递增 token，保证重复搜索重新触发
-  // field 类型：该字段命中的全部边 id（由 SearchBox 聚合后透传）
+  // field 类型：该字段命中的全部边 id（全局视图编号，由 SearchBox 聚合后透传）
   edgeIds?: string[];
+  // field 类型：命中的 (source,target) 对（视图无关，子图视图靠它命中）
+  edgePairs?: [string, string][];
 }
 
 interface Props {
@@ -516,7 +545,7 @@ const LineageGraph: React.FC<Props> = ({
         return {
           id: n.id,
           type: "collapsible",
-          data: { label: truncateLabel(n.label), fullName: n.label, nodeType: n.type },
+          data: { ...labelData(n.label), nodeType: n.type },
           position: { x: 0, y: 0 },
           style: nodeStyle(n.type),
         };
@@ -567,7 +596,7 @@ const LineageGraph: React.FC<Props> = ({
         return {
           id: n.id,
           type: "collapsible",
-          data: { label: truncateLabel(n.label), fullName: n.label, nodeType: n.type },
+          data: { ...labelData(n.label), nodeType: n.type },
           position: { x: 0, y: 0 },
           style: nodeStyle(n.type),
         };
@@ -715,6 +744,38 @@ const LineageGraph: React.FC<Props> = ({
     }));
   }, [visibleEdges, selectedEdgeId, hasImpactHighlight, impactDownstreamEdges, impactUpstreamEdges, hasFieldHighlight, fieldHighlightEdges, setEdges]);
 
+  // 视口聚焦到指定节点集合：自行计算包围盒后 setViewport。
+  // 不用 rf.fitView({ nodes })——真机实测 v12 该路径从全图初始态调用时
+  // 返回的视口与全图 fit 相同（nodes 过滤未按预期生效），setViewport 直达可控。
+  const fitToNodeIds = useCallback((ids: Iterable<string>) => {
+    const rf = reactFlowRef.current;
+    const pane = wrapperRef.current;
+    if (!rf || !pane) return;
+    const idSet = ids instanceof Set ? ids : new Set(ids);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, found = false;
+    for (const n of rf.getNodes()) {
+      if (!idSet.has(n.id)) continue;
+      found = true;
+      const w = n.measured?.width ?? 150;
+      const h = n.measured?.height ?? 40;
+      minX = Math.min(minX, n.position.x);
+      minY = Math.min(minY, n.position.y);
+      maxX = Math.max(maxX, n.position.x + w);
+      maxY = Math.max(maxY, n.position.y + h);
+    }
+    if (!found) return;
+    const pad = 0.5;
+    const vw = Math.max(1, maxX - minX);
+    const vh = Math.max(1, maxY - minY);
+    const zoom = Math.min(
+      1.5,
+      Math.max(0.3, Math.min(pane.clientWidth / (vw * (1 + pad)), pane.clientHeight / (vh * (1 + pad)))),
+    );
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    rf.setViewport({ x: pane.clientWidth / 2 - zoom * cx, y: pane.clientHeight / 2 - zoom * cy, zoom }, { duration: 0 });
+  }, []);
+
   // 搜索选中后聚焦+高亮（由 App 的 focusTarget 驱动）。
   // 折叠链可能把目标节点隐藏 → fitView 找不到不可见节点会静默失败。
   // 处理：先解析目标节点 id（resolveFocusNodeIds 统一处理 node/edge/field 三类），
@@ -755,10 +816,9 @@ const LineageGraph: React.FC<Props> = ({
       return;
     }
     // 目标可见，直接聚焦 + 应用高亮
-    const rf = reactFlowRef.current;
     if (focusTarget.type === "node") {
       // 搜表名 = 点节点的效果：fitView + 展开表名 + 影响分析高亮（上下游双色）
-      rf.fitView({ nodes: [{ id: focusTarget.id }], padding: 0.5, duration: 0, maxZoom: 1.5 });
+      fitToNodeIds([focusTarget.id]);
       setExpandedNodeId(focusTarget.id);
       setSelectedEdgeId(null);
       setSelectedEdge(null);
@@ -766,19 +826,13 @@ const LineageGraph: React.FC<Props> = ({
       triggerImpactAnalysis(focusTarget.id);
     } else if (focusTarget.type === "edge" && hitEdges.length > 0) {
       const e = hitEdges[0];
-      rf.fitView({
-        nodes: [{ id: e.source }, { id: e.target }],
-        padding: 0.5, duration: 0, maxZoom: 1.5,
-      });
+      fitToNodeIds([e.source, e.target]);
       setSelectedEdgeId(e.id);
       setSelectedEdge(e);
       setFieldHighlightEdges(new Set());
     } else if (focusTarget.type === "field") {
       // 字段搜索：高亮所有命中边 + fitView 涵盖这些边的全部端点节点
-      rf.fitView({
-        nodes: [...needVisible].map((id) => ({ id })),
-        padding: 0.5, duration: 0, maxZoom: 1.5,
-      });
+      fitToNodeIds(needVisible);
       setFieldHighlightEdges(new Set(hitEdges.map((e) => e.id)));
       setSelectedEdgeId(null);
       setSelectedEdge(null);
@@ -799,12 +853,11 @@ const LineageGraph: React.FC<Props> = ({
       setPendingFocus(null);
       return;
     }
-    const rf = reactFlowRef.current;
     // 等一帧让 ReactFlow 完成节点坐标计算（折叠移除后新节点刚加入需要布局）
     const t = window.setTimeout(() => {
       if (pendingFocus.type === "node") {
         // 搜表名 = 点节点效果：fitView + 展开表名 + 影响分析高亮（上下游双色）
-        rf.fitView({ nodes: [{ id: pendingFocus.id }], padding: 0.5, duration: 0, maxZoom: 1.5 });
+        fitToNodeIds([pendingFocus.id]);
         setExpandedNodeId(pendingFocus.id);
         setSelectedEdgeId(null);
         setSelectedEdge(null);
@@ -812,18 +865,12 @@ const LineageGraph: React.FC<Props> = ({
         triggerImpactAnalysis(pendingFocus.id);
       } else if (pendingFocus.type === "edge" && hitEdges.length > 0) {
         const e = hitEdges[0];
-        rf.fitView({
-          nodes: [{ id: e.source }, { id: e.target }],
-          padding: 0.5, duration: 0, maxZoom: 1.5,
-        });
+        fitToNodeIds([e.source, e.target]);
         setSelectedEdgeId(e.id);
         setSelectedEdge(e);
         setFieldHighlightEdges(new Set());
       } else if (pendingFocus.type === "field") {
-        rf.fitView({
-          nodes: [...needVisible].map((id) => ({ id })),
-          padding: 0.5, duration: 0, maxZoom: 1.5,
-        });
+        fitToNodeIds(needVisible);
         setFieldHighlightEdges(new Set(hitEdges.map((e) => e.id)));
         setSelectedEdgeId(null);
         setSelectedEdge(null);
@@ -856,6 +903,8 @@ const LineageGraph: React.FC<Props> = ({
       const hiddenDownCount = hiddenDownCounts.get(n.id) ?? 0;
       const hasInEdges = (inDeg.get(n.id) ?? 0) > 0 || isUpCollapsed;
       const hasOutEdges = (outDeg.get(n.id) ?? 0) > 0 || isDownCollapsed;
+      // 展开态单行显示完整名：撤掉 schema 副行；收起后恢复两行拆分
+      const targetSchema = expanded ? undefined : d.schema;
       const targetStyle = expanded
         ? { ...n.style, maxWidth: "none", border: "3px solid #fff", boxShadow: "0 0 8px rgba(255,255,255,0.8)" }
         : emphasizedNodes?.has(n.id)
@@ -870,6 +919,7 @@ const LineageGraph: React.FC<Props> = ({
         d.hiddenDownCount === hiddenDownCount &&
         d.hasInEdges === hasInEdges &&
         d.hasOutEdges === hasOutEdges &&
+        d.schema === targetSchema &&
         targetStyle === n.style
       ) {
         return n;
@@ -879,6 +929,7 @@ const LineageGraph: React.FC<Props> = ({
         data: {
           ...n.data,
           label: expanded ? fullName : d.label,
+          schema: targetSchema,
           isUpCollapsed,
           isDownCollapsed,
           hiddenUpCount,
@@ -1006,41 +1057,11 @@ const LineageGraph: React.FC<Props> = ({
   };
 
   const handleExportHtml = () => {
-    // 导出自包含 HTML：nodes/edges JSON + React Flow CDN，打开是可缩放只读图。
-    // 安全：JSON.stringify 不转义 </script>，表名来自用户 SQL（可含带引号标识符），
-    // 直接内嵌可注入脚本 → 转义 </ 为 <\/（JSON 语法不变，语义等价）
-    const data = JSON.stringify({ nodes: laidNodes, edges: laidEdges }, null, 2)
-      .replace(/<\//g, "<\\/");
-    const html = `<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<title>LineagePuzzle 血缘图</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xyflow/react@12/dist/style.css">
-<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xyflow/react@12/dist/umd/index.js"></script>
-<style>
-  body { margin: 0; }
-  #app { width: 100vw; height: 100vh; }
-</style>
-</head>
-<body>
-<div id="app"></div>
-<script>
-  var graphData = ${data};
-  var e = React.createElement;
-  var app = e(XyFlow.ReactFlow,
-    { nodes: graphData.nodes, edges: graphData.edges, fitView: true,
-      proOptions: { hideAttribution: true } },
-    e(XyFlow.Background, { gap: 16 }),
-    e(XyFlow.Controls),
-    e(XyFlow.MiniMap)
-  );
-  ReactDOM.createRoot(document.getElementById('app')).render(app);
-</script>
-</body>
-</html>`;
+    // 导出零依赖自包含 HTML：内联 SVG 快照 + 原生 JS 缩放平移，离线双击即开。
+    // （旧实现走 CDN 加载 React Flow UMD：UMD 全局名写错 + 内网无网，两个死因）
+    // 用实时 nodes/edges 而非 laidNodes/laidEdges：快照与所见一致
+    // （含折叠过滤、拖拽后位置、展开态全名、高亮描边）。
+    const html = buildStandaloneHtml(nodes, edges, isVertical);
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1075,7 +1096,7 @@ const LineageGraph: React.FC<Props> = ({
             <Tooltip title="导出为 PNG 图片">
               <Button size="small" icon={<FileImageOutlined />} onClick={handleExportPng}>PNG</Button>
             </Tooltip>
-            <Tooltip title="导出为自包含 HTML（可缩放，需联网打开）">
+            <Tooltip title="导出为自包含 HTML（离线可打开，支持缩放平移）">
               <Button size="small" icon={<FileOutlined />} onClick={handleExportHtml}>HTML</Button>
             </Tooltip>
           </div>

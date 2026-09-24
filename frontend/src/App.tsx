@@ -426,18 +426,17 @@ function App() {
               }}
             />
             <SearchBox
+              // fieldsOnly：表搜索归左侧表列表（表为中心的导航主入口），
+              // 顶部只保留其独有能力——字段流转高亮
+              fieldsOnly
               nodes={searchNodes}
               edges={searchEdges}
               onSelectTarget={(t: SearchTarget) => {
                 // 递增 token：即使连续两次搜同一目标，新 FocusTarget 引用不同，
                 // effect [focusTarget] 也会重跑，避免「重复搜索无反馈」。
                 const focusToken = ++focusTokenRef.current;
-                if (t.type === "node") {
-                  // 搜表 = 导航动作：直接选中该表（进入其邻域子图）并聚焦
-                  setSelectedTables((prev) => (prev.includes(t.id) ? prev : [...prev, t.id]));
-                  setShowGlobal(false);
-                } else if (!isGlobalView && selectedTables.length === 0) {
-                  // 边/字段目标需要完整图上下文：空态时切到全局视图
+                if (!isGlobalView && selectedTables.length === 0) {
+                  // 字段目标需要完整图上下文：空态时切到全局视图
                   setShowGlobal(true);
                 }
                 setFocusTarget({
@@ -445,6 +444,7 @@ function App() {
                   id: t.id,
                   focusToken,
                   edgeIds: t.edgeIds,
+                  edgePairs: t.edgePairs,
                 });
               }}
             />

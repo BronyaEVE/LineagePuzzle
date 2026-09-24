@@ -14,8 +14,11 @@ import type { VisNode, ColumnMapping } from "../types";
 export interface SearchTarget {
   type: "node" | "edge" | "field";
   id: string;
-  // field 类型：该字段命中的全部边 id（血缘语义：该字段在哪些流转路径出现）
+  // field 类型：该字段命中的全部边 id（全局视图的 ge-N 编号）
   edgeIds?: string[];
+  // field 类型：命中的 (source,target) 对。边 id 编号随视图不同（全局 ge-N /
+  // 子图 e-M），(source,target) 对才是视图无关的标识；两路都带上，命中其一即可
+  edgePairs?: [string, string][];
 }
 
 /** 带业务元数据的 option（antd option 的扩展） */
@@ -36,51 +39,62 @@ interface SearchEdge {
 interface Props {
   nodes: VisNode[];
   edges: SearchEdge[];
+  /** 只搜字段（表.列）。表搜索由左侧表列表负责——顶部再搜表是重复入口 */
+  fieldsOnly?: boolean;
   onSelectTarget: (target: SearchTarget) => void;
 }
 
-const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
+const SearchBox: React.FC<Props> = ({ nodes, edges, fieldsOnly, onSelectTarget }) => {
   const options = useMemo<SearchOption[]>(() => {
     const opts: SearchOption[] = [];
     const seen = new Set<string>();
 
-    for (const n of nodes) {
-      const key = `table:${n.id}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        opts.push({
-          key,
-          value: n.id,
-          label: (
-            <span>
-              <span style={{ color: "#52c41a", marginRight: 6 }}>●</span>
-              {n.id}
-            </span>
-          ),
-          target: { type: "node", id: n.id },
-        });
+    if (!fieldsOnly) {
+      for (const n of nodes) {
+        const key = `table:${n.id}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          opts.push({
+            key,
+            value: n.id,
+            label: (
+              <span>
+                <span style={{ color: "#52c41a", marginRight: 6 }}>●</span>
+                {n.id}
+              </span>
+            ),
+            target: { type: "node", id: n.id },
+          });
+        }
       }
     }
 
     // 字段搜索：按「表.列」聚合（血缘最小语义单位是具体的列，不是裸列名）。
     // orders.id 和 users.id 是两个不同的字段，必须分开；但 orders.id 流转到
     // 多张表（作为多条边的源列）时合并为一个结果，高亮全部相关边。
-    // fieldMap 键 = `${table}.${col}`，值 = { table, col, 命中的边 id 集合 }
-    interface FieldAgg { table: string; col: string; edges: Set<string>; }
+    // fieldMap 键 = `${table}.${col}`，值 = { table, col, 命中的边 }
+    interface FieldAgg {
+      table: string;
+      col: string;
+      edges: Set<string>;
+      pairs: Set<string>;
+    }
     const fieldMap = new Map<string, FieldAgg>();
-    const addField = (table: string, col: string, edgeId: string) => {
+    const addField = (table: string, col: string, edgeId: string, pair: [string, string]) => {
       if (!col) return;
       const key = `${table}.${col}`;
       let agg = fieldMap.get(key);
-      if (!agg) { agg = { table, col, edges: new Set() }; fieldMap.set(key, agg); }
+      if (!agg) { agg = { table, col, edges: new Set(), pairs: new Set() }; fieldMap.set(key, agg); }
       agg.edges.add(edgeId);
+      agg.pairs.add(`${pair[0]}|${pair[1]}`);
     };
     for (const e of edges) {
       const edgeId = e._edgeId || `${e.source}->${e.target}`;
+      const pair: [string, string] = [e.source, e.target];
       for (const m of e.column_mappings || []) {
-        if (m.target_column) addField(m.target_table, m.target_column, edgeId);
+        if (m.target_column) addField(m.target_table, m.target_column, edgeId, pair);
         for (const sc of m.source_columns) {
-          addField(m.source_table, sc, edgeId);
+          addField(m.source_table, sc, edgeId, pair);
         }
       }
     }
@@ -90,6 +104,10 @@ const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
       // value 用完整 table.col：选中后输入框回填完整名（与 label 一致），
       // 模糊匹配 filterOption 用 includes，输列名/表名/全名都能命中。
       const qualified = `${agg.table}.${agg.col}`;
+      const pairs: [string, string][] = [...agg.pairs].map((p) => {
+        const i = p.indexOf("|");
+        return [p.slice(0, i), p.slice(i + 1)];
+      });
       opts.push({
         key,
         value: qualified,
@@ -104,11 +122,11 @@ const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
             )}
           </span>
         ),
-        target: { type: "field", id: qualified, edgeIds: [...agg.edges] },
+        target: { type: "field", id: qualified, edgeIds: [...agg.edges], edgePairs: pairs },
       });
     }
     return opts;
-  }, [nodes, edges]);
+  }, [nodes, edges, fieldsOnly]);
 
   return (
     <>
@@ -140,7 +158,7 @@ const SearchBox: React.FC<Props> = ({ nodes, edges, onSelectTarget }) => {
         rootClassName="header-search"
         options={options}
         suffixIcon={<SearchOutlined />}
-        placeholder="搜索表名/字段名"
+        placeholder={fieldsOnly ? "搜索字段（表.列）" : "搜索表名/字段名"}
         filterOption={(input, option) => {
           if (!input) return true;
           const val = String((option as SearchOption).value).toLowerCase();
